@@ -364,7 +364,7 @@ final class LibraryStore {
         var name = "My Playlist", n = 2
         while wallpapers.contains(where: { $0.name == name }) { name = "My Playlist \(n)"; n += 1 }
         var playlist = Playlist()
-        let playable = wallpaperIDs.filter { wallpaper(id: $0)?.isPlaylist == false }
+        let playable = wallpaperIDs.filter { self.wallpaper(id: $0)?.isPlaylist == false }
         let starts = Playlist.spreadStarts(count: playable.count)
         playlist.items = zip(playable, starts).map { PlaylistItem(wallpaperID: $0, start: $1) }
         let wallpaper = Wallpaper(
