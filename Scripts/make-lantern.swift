@@ -6,10 +6,11 @@
 //   .build/tools/make-lantern --package ~/Movies/Lantern.tidewall
 //   .build/tools/make-lantern --still frame.png 0.3 normal
 //
-// By default the emblem's position and size come from Lantern's saved settings
-// and the output matches the main display's pixel size, so the light lines up
-// with the emblem 1:1. Override with --center X,Y and --emblem SIZE (points)
-// and --screen WxH@SCALE.
+// The emblem's position and size are measured from Lantern's window while it
+// runs (falling back to its saved settings), laid out exactly as Lantern lays
+// it out, and the output matches the main display's pixel size, so the light
+// sits behind the emblem 1:1. Override with --center X,Y (the emblem's centre)
+// and --emblem DIAMETER, in points, and --screen WxH@SCALE.
 
 import AppKit
 import AVFoundation
@@ -54,17 +55,50 @@ let scale: Double = options["screen"]?.split(separator: "@").dropFirst().first.f
 let W = (screenPoints.0 * scale).rounded()
 let H = (screenPoints.1 * scale).rounded()
 
-let centerPoints: (Double, Double) = pair(options["center"])
-    ?? ((lantern?.bool(forKey: "hasCenter") ?? false)
-        ? (lantern!.double(forKey: "centerX"), lantern!.double(forKey: "centerY"))
-        : (screenPoints.0 / 2, screenPoints.1 / 2))
-let emblemPoints = Double(options["emblem"] ?? "") ?? {
-    let saved = lantern?.double(forKey: "emblemSize") ?? 0
-    return saved > 0 ? saved : 190
-}()
+/// Where Lantern draws its emblem, in screen points (AppKit coordinates),
+/// following Lantern's own layout:
+/// - its window is a square canvas centred on the saved position, and the
+///   emblem fills the middle 60% of it (`glowPadding` 0.40);
+/// - the Size setting is 1/0.83 of the emblem's diameter;
+/// - with Show Percentage on, the emblem is lifted by half the caption block
+///   (5% of the diameter plus the cap height of the semibold digit font at 14%
+///   of it), so ring and number together straddle the window's centre.
+func lanternEmblem() -> (center: (Double, Double), diameter: Double, source: String) {
+    var center: (Double, Double)?
+    var diameter: Double?
+    var source = "defaults"
+
+    // The live window is the ground truth for where the canvas is.
+    let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
+    let primaryTop = Double(NSScreen.screens.first?.frame.maxY ?? CGFloat(screenPoints.1))
+    if let window = windows.first(where: { ($0[kCGWindowOwnerName as String] as? String) == "Lantern" }),
+       let bounds = (window[kCGWindowBounds as String]).flatMap({ CGRect(dictionaryRepresentation: $0 as! CFDictionary) }),
+       bounds.width > 40, abs(bounds.width - bounds.height) < 1 {
+        center = (Double(bounds.midX), primaryTop - Double(bounds.midY))
+        diameter = Double(bounds.width) * (1 - 0.40)
+        source = "Lantern's window"
+    } else if lantern?.bool(forKey: "hasCenter") == true {
+        center = (lantern!.double(forKey: "centerX"), lantern!.double(forKey: "centerY"))
+        source = "Lantern's saved position"
+    }
+    let size = lantern?.double(forKey: "emblemSize") ?? 0
+    let d = diameter ?? (size > 0 ? size : 190) * 0.83
+    var c = center ?? (screenPoints.0 / 2, screenPoints.1 / 2)
+
+    let showPercent = lantern?.object(forKey: "showPercent") as? Bool ?? true
+    if showPercent {
+        let font = NSFont.monospacedDigitSystemFont(ofSize: d * 0.14, weight: .semibold)
+        c.1 += (d * 0.05 + Double(font.capHeight)) / 2
+    }
+    return (c, d, source)
+}
+
+let measured = lanternEmblem()
+let centerPoints = pair(options["center"]) ?? measured.center
+let emblemDiameter = Double(options["emblem"] ?? "") ?? measured.diameter
 /// The emblem, in output pixels (y up, like Core Graphics and AppKit).
 let C = CGPoint(x: centerPoints.0 * scale, y: centerPoints.1 * scale)
-let R = emblemPoints / 2 * scale
+let R = emblemDiameter / 2 * scale
 
 // MARK: - Helpers
 
@@ -385,7 +419,8 @@ func render(_ s: State, to output: URL) throws {
 
 // MARK: - Main
 
-print(String(format: "Output %.0f×%.0f px; emblem at (%.0f, %.0f) px, radius %.0f px", W, H, C.x, C.y, R))
+print(String(format: "Output %.0f×%.0f px; emblem (from %@) at (%.1f, %.1f) pt, %.1f pt across",
+             W, H, measured.source, centerPoints.0, centerPoints.1, emblemDiameter))
 
 if positional.first == "--still", positional.count >= 2 {
     let progress = positional.count >= 3 ? Double(positional[2]) ?? 0 : 0

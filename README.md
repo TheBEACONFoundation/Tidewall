@@ -113,7 +113,10 @@ Missing states fall back to the `primary` video. All the variants share one set 
 - **Low**, **critical** and **empty** at 20%, 10% and 1.5% while not charging.
 - **Normal** otherwise.
 
-`Scripts/make-lantern.swift` renders the matching wallpaper for Lantern. It reads the emblem's saved position and size from Lantern's settings, and renders at your display's exact pixel size, so the scene's light sits exactly behind the emblem. Each state uses Lantern's palette and particle behavior for that corps.
+`Scripts/make-lantern.swift` renders the matching wallpaper for Lantern.
+- **Where the emblem is:** it measures where Lantern actually draws the emblem, from Lantern's window. It then applies Lantern's own layout: the emblem fills the middle 60% of the window, and it's lifted to make room for the percentage caption.
+- **Resolution:** it renders at your display's exact pixel size, so the scene's light sits exactly behind the emblem.
+- **Look:** each state uses Lantern's palette and particle behavior for that corps.
 
 ```bash
 swiftc -O Scripts/make-lantern.swift -o .build/tools/make-lantern
@@ -121,7 +124,7 @@ swiftc -O Scripts/make-lantern.swift -o .build/tools/make-lantern
 open -a Tidewall ~/Desktop/Lantern.tidewall
 ```
 
-Re-render it if you move or resize the emblem, or change displays.
+Re-render it if you move or resize the emblem, turn Show Percentage on or off, or change displays.
 
 ## Performance
 
