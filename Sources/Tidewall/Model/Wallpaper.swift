@@ -31,6 +31,19 @@ struct Wallpaper: Codable, Identifiable, Hashable {
     }
 }
 
+/// Wallpapers that ship inside the app bundle (Resources/<id>.mov).
+struct BuiltInWallpaper: Identifiable, Hashable {
+    let id: String
+    let name: String
+
+    static let all = [
+        BuiltInWallpaper(id: "CoolChicken", name: "Cool Chicken"),
+        BuiltInWallpaper(id: "Aurora", name: "Aurora"),
+    ]
+
+    var url: URL? { Bundle.main.url(forResource: id, withExtension: "mov") }
+}
+
 enum Scaling: String, Codable, CaseIterable, Identifiable {
     case fill, fit, stretch
     var id: String { rawValue }

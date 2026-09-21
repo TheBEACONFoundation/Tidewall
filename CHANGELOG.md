@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+New built-in wallpaper, **Cool Chicken**: a chicken in sunglasses struts through a synthwave sunset, rendered procedurally in 4K60 as a seamless 12-second loop.
+- Existing libraries receive new built-ins automatically.
+- The library's **+** menu (and **File → Add Built-in Wallpaper**) re-adds any built-in.
+
 Lower CPU and GPU use at the same quality:
 
 - Color adjustments are baked into an HEVC playback copy a few seconds after editing stops, so the desktop no longer filters every frame. A filtered 4K60 wallpaper went from 27% GPU / 29% CPU to 0.7% / 2.3% (M5 Max). Copies are visually lossless (51–56 dB PSNR).

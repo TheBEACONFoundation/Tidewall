@@ -126,3 +126,14 @@ struct WallpaperPlayerRepresentable: NSViewRepresentable {
         view.configure(with: wallpaper)
     }
 }
+
+/// "Add Built-in Wallpaper" submenu for the File menu.
+struct BuiltInWallpaperMenu: View {
+    var body: some View {
+        Menu("Add Built-in Wallpaper") {
+            ForEach(BuiltInWallpaper.all) { builtIn in
+                Button(builtIn.name) { Task { await LibraryStore.shared.addBuiltIn(builtIn) } }
+            }
+        }
+    }
+}

@@ -43,9 +43,14 @@ if [[ ! -f Resources/AppIcon.icns ]]; then
     iconutil -c icns "$ICONSET" -o Resources/AppIcon.icns
 fi
 if [[ ! -f Resources/Aurora.mov ]]; then
-    echo "==> Rendering sample wallpaper"
+    echo "==> Rendering Aurora wallpaper"
     swiftc -O -target arm64-apple-macos15 Scripts/make-sample.swift -o .build/tools/make-sample
     .build/tools/make-sample Resources/Aurora.mov | tail -1
+fi
+if [[ ! -f Resources/CoolChicken.mov ]]; then
+    echo "==> Rendering Cool Chicken wallpaper (about a minute)"
+    swiftc -O -target arm64-apple-macos15 Scripts/make-chicken.swift -o .build/tools/make-chicken
+    .build/tools/make-chicken Resources/CoolChicken.mov | tail -1
 fi
 
 if [[ "$CONFIG" == "release" ]]; then
@@ -65,7 +70,7 @@ cp "$BIN" "$APP/Contents/MacOS/Tidewall"
 cp "$PLIST_SRC" "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$APP/Contents/Info.plist"
-cp Resources/AppIcon.icns Resources/Aurora.mov "$APP/Contents/Resources/"
+cp Resources/AppIcon.icns Resources/*.mov "$APP/Contents/Resources/"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 if [[ -n "${SIGN_IDENTITY:-}" ]]; then

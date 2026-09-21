@@ -248,13 +248,24 @@ final class LibraryStore {
         }
     }
 
-    /// Adds the bundled sample the first time the app runs, so there is
-    /// something to play with before the user imports their own videos.
-    func installSampleIfNeeded() async {
-        let key = "didInstallSample"
-        guard !UserDefaults.standard.bool(forKey: key),
-              let sample = Bundle.main.url(forResource: "Aurora", withExtension: "mov") else { return }
-        UserDefaults.standard.set(true, forKey: key)
-        await importFiles([sample], names: [sample: "Aurora"])
+    /// Adds each bundled wallpaper once: everything on first launch, and any
+    /// built-ins added by an update. Deleted ones stay deleted until the user
+    /// adds them back from the + menu.
+    func installBuiltInsIfNeeded() async {
+        let key = "installedBuiltIns"
+        let defaults = UserDefaults.standard
+        var installed = Set(defaults.stringArray(forKey: key) ?? [])
+        if defaults.bool(forKey: "didInstallSample") { installed.insert("Aurora") } // set by 1.0
+        let missing = BuiltInWallpaper.all.filter { !installed.contains($0.id) && $0.url != nil }
+        guard !missing.isEmpty else { return }
+        defaults.set(Array(installed.union(missing.map(\.id))).sorted(), forKey: key)
+        for builtIn in missing {
+            await addBuiltIn(builtIn)
+        }
+    }
+
+    func addBuiltIn(_ builtIn: BuiltInWallpaper) async {
+        guard let url = builtIn.url else { return }
+        await importFiles([url], names: [url: builtIn.name])
     }
 }

@@ -19,6 +19,7 @@ struct TidewallApp: App {
             CommandGroup(replacing: .newItem) {
                 Button("Import Wallpapers…") { LibraryStore.shared.presentImportPanel() }
                     .keyboardShortcut("o")
+                BuiltInWallpaperMenu()
             }
             CommandGroup(after: .windowArrangement) {
                 Button("Wallpaper Library") { AppDelegate.shared.showLibrary() }
@@ -86,7 +87,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let store = LibraryStore.shared
         store.load()
         WallpaperEngine.shared.start()
-        Task { await store.installSampleIfNeeded() }
+        Task { await store.installBuiltInsIfNeeded() }
 
         if !launchedAsLoginItem {
             showLibrary()

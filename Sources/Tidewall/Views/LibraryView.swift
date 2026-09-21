@@ -134,12 +134,20 @@ struct LibraryGridView: View {
         .searchable(text: $searchText, placement: .toolbar, prompt: "Search")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Button {
-                    store.presentImportPanel()
+                Menu {
+                    Button("Import Videos or GIFs…") { store.presentImportPanel() }
+                    Divider()
+                    Section("Built-in Wallpapers") {
+                        ForEach(BuiltInWallpaper.all) { builtIn in
+                            Button(builtIn.name) { Task { await store.addBuiltIn(builtIn) } }
+                        }
+                    }
                 } label: {
-                    Label("Import", systemImage: "plus")
+                    Label("Add", systemImage: "plus")
+                } primaryAction: {
+                    store.presentImportPanel()
                 }
-                .help("Import videos or animated images")
+                .help("Import videos, or add a built-in wallpaper")
             }
         }
         .dropDestination(for: URL.self) { urls, _ in
@@ -191,6 +199,11 @@ struct LibraryGridView: View {
         } actions: {
             Button("Import Wallpapers…") { store.presentImportPanel() }
                 .buttonStyle(.borderedProminent)
+            Button("Add Built-in Wallpapers") {
+                Task {
+                    for builtIn in BuiltInWallpaper.all { await store.addBuiltIn(builtIn) }
+                }
+            }
         }
     }
 
