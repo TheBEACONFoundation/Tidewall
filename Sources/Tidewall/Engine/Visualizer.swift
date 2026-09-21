@@ -267,7 +267,7 @@ final class VisualizerRenderer {
 }
 
 /// What a live wallpaper draws.
-enum LiveContent: Equatable {
+enum LiveContent: Hashable {
     case pulse(VisualizerSettings)
     case blocks(Composition)
 
@@ -317,6 +317,27 @@ final class VisualizerView: MTKView, MTKViewDelegate {
     private var motion = BlocksMotion()
     private var lastTime = CACurrentMediaTime()
     private var quietSince: CFTimeInterval?
+
+    override var isPaused: Bool {
+        didSet {
+            // Hidden is the time to rewind the travel counters; drawing once
+            // leaves a picture that already matches for when it's seen again.
+            if isPaused, !oldValue, window != nil, rewindMotion(beyond: 1024) { draw() }
+        }
+    }
+
+    /// The travel counters only ever grow, and past a few thousand a Float
+    /// can't resolve one frame's step, so motion would start to stutter.
+    /// Rewinding jumps the picture, so it waits for the view to be hidden
+    /// unless it has run visibly for many hours.
+    private func rewindMotion(beyond limit: Double) -> Bool {
+        guard Double(max(flight, drift)) > limit || motion.phases.values.contains(where: { abs($0) > limit })
+        else { return false }
+        flight = 0
+        drift = 0
+        motion = BlocksMotion()
+        return true
+    }
 
     init?(frame: CGRect, content: LiveContent) {
         guard let renderer = VisualizerRenderer.shared else { return nil }
@@ -370,6 +391,7 @@ final class VisualizerView: MTKView, MTKViewDelegate {
             if preferredFramesPerSecond != 60 { preferredFramesPerSecond = 60 }
         }
 
+        _ = rewindMotion(beyond: 8192)
         switch content {
         case .pulse(let settings):
             // Travel speeds follow the music; integrating them keeps motion smooth.

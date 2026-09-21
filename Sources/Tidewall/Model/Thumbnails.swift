@@ -41,7 +41,7 @@ final class ThumbnailCache {
     private var rawFrames: [String: CGImage] = [:]
 
     static func cacheKey(for wallpaper: Wallpaper) -> String {
-        if let content = LiveContent(wallpaper) { return "live|\(String(describing: content).hashValue)" }
+        if let content = LiveContent(wallpaper) { return "live|\(content.hashValue)" }
         let file = LibraryStore.shared.currentMediaFile(for: wallpaper)
         return "\(file)|\(thumbnailTime(for: wallpaper))|\(wallpaper.settings.adjustments.hashValue)"
     }
@@ -105,6 +105,8 @@ final class SystemWallpaperSync {
         hasher.combine(wallpaper.id)
         hasher.combine(LibraryStore.shared.currentMediaFile(for: wallpaper))
         hasher.combine(wallpaper.settings)
+        hasher.combine(wallpaper.visualizer)
+        hasher.combine(wallpaper.composition)
         hasher.combine(display.pixelSize.width)
         hasher.combine(display.pixelSize.height)
         let signature = hasher.finalize()

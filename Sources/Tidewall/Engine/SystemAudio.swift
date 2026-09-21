@@ -205,10 +205,13 @@ final class AudioReactor {
     @ObservationIgnored private var silentChecks = 0
     @ObservationIgnored private var lastLog: CFTimeInterval = 0
     @ObservationIgnored private var outputListener: AudioObjectPropertyListenerBlock?
+    /// After a failed start, when to try again (rather than on every check).
+    @ObservationIgnored private var retryAfter: CFTimeInterval = 0
 
     /// How many visible visualizers a part of the app is showing (desktop
     /// windows, the editor preview). Listening runs while the total is above 0.
-    func setDemand(_ count: Int, from source: String) {
+    /// Pass nil when a source goes away for good.
+    func setDemand(_ count: Int?, from source: String) {
         let before = demands.values.reduce(0, +)
         demands[source] = count
         let after = demands.values.reduce(0, +)
@@ -261,7 +264,7 @@ final class AudioReactor {
     private func checkPlayback() {
         if SystemAudioTap.isOtherAudioPlaying() {
             quietChecks = 0
-            if !tap.isRunning { startTap() }
+            if !tap.isRunning, CACurrentMediaTime() >= retryAfter { startTap() }
             silentChecks = cached.isSilent ? silentChecks + 1 : 0
             let silent = silentChecks >= 4
             if hearsOnlySilence != silent { hearsOnlySilence = silent }
@@ -275,11 +278,13 @@ final class AudioReactor {
         do {
             try tap.start()
             if analyzer.sampleRate != tap.sampleRate { analyzer = AudioAnalyzer(sampleRate: tap.sampleRate) }
+            retryAfter = 0
             lastError = nil
             isListening = true
         } catch {
             lastError = error.localizedDescription
             isListening = false
+            retryAfter = CACurrentMediaTime() + 30
             NSLog("Tidewall: \(error.localizedDescription)")
         }
     }
@@ -291,7 +296,10 @@ final class AudioReactor {
                                               mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
         let listener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
             MainActor.assumeIsolated {
-                guard let self, self.tap.isRunning else { return }
+                guard let self else { return }
+                // A new output may work where the old one failed.
+                self.retryAfter = 0
+                guard self.tap.isRunning else { return }
                 self.stopTap()
                 self.startTap()
             }

@@ -98,6 +98,16 @@ struct BlocksTests {
         #expect((loud.phases[block.id] ?? 0) > 2.5, "music speeds it up")
     }
 
+    @Test func editingBlocksChangesTheThumbnail() {
+        var wallpaper = Wallpaper(id: UUID(), name: "Mine", mediaFile: "", originalFileName: "", dateAdded: .now,
+                                  duration: 0, pixelWidth: 0, pixelHeight: 0, settings: WallpaperSettings(),
+                                  composition: BlockTemplate.nightSky.composition)
+        let before = ThumbnailCache.cacheKey(for: wallpaper)
+        #expect(ThumbnailCache.cacheKey(for: wallpaper) == before, "stable while nothing changes")
+        wallpaper.composition?.blocks[0].colorA = RGBAColor(red: 1, green: 0, blue: 0)
+        #expect(ThumbnailCache.cacheKey(for: wallpaper) != before)
+    }
+
     @Test func exportedWallpapersImportElsewhere() async throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("tidewall-tests-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: dir) }

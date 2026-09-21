@@ -136,6 +136,14 @@ struct LiveEditorContent: View {
 struct LivePreview: NSViewRepresentable {
     let content: LiveContent
 
+    /// Each preview has its own demand, so one going away (e.g. while
+    /// switching editors) can't cancel another that's still on screen.
+    final class Coordinator {
+        let demandKey = "editor-\(UUID().uuidString)"
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
     func makeNSView(context: Context) -> NSView {
         guard let view = VisualizerView(frame: .zero, content: content) else {
             let placeholder = NSView()
@@ -143,18 +151,18 @@ struct LivePreview: NSViewRepresentable {
             placeholder.layer?.backgroundColor = NSColor.black.cgColor
             return placeholder
         }
-        AudioReactor.shared.setDemand(content.needsAudio ? 1 : 0, from: "editor")
+        AudioReactor.shared.setDemand(content.needsAudio ? 1 : 0, from: context.coordinator.demandKey)
         return view
     }
 
     func updateNSView(_ view: NSView, context: Context) {
         guard let view = view as? VisualizerView, view.content != content else { return }
         view.content = content
-        AudioReactor.shared.setDemand(content.needsAudio ? 1 : 0, from: "editor")
+        AudioReactor.shared.setDemand(content.needsAudio ? 1 : 0, from: context.coordinator.demandKey)
     }
 
-    static func dismantleNSView(_ view: NSView, coordinator: ()) {
+    static func dismantleNSView(_ view: NSView, coordinator: Coordinator) {
         (view as? VisualizerView)?.isPaused = true
-        AudioReactor.shared.setDemand(0, from: "editor")
+        AudioReactor.shared.setDemand(nil, from: coordinator.demandKey)
     }
 }

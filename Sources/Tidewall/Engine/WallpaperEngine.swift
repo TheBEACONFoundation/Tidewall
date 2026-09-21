@@ -59,6 +59,8 @@ final class WallpaperEngine {
     @ObservationIgnored private var coveredDisplays: Set<String> = []
     @ObservationIgnored private var coverageTimer: Timer?
     @ObservationIgnored private var batteryTimer: Timer?
+    @ObservationIgnored private var occlusionObservers: [String: NSObjectProtocol] = [:]
+    @ObservationIgnored private var defaultsChangePending = false
     @ObservationIgnored private var started = false
 
     private static let assignmentsKey = "assignments"
@@ -155,6 +157,9 @@ final class WallpaperEngine {
 
         for (id, window) in windows where liveWindows[id] == nil {
             window.tearDown()
+            if let observer = occlusionObservers.removeValue(forKey: id) {
+                NotificationCenter.default.removeObserver(observer)
+            }
         }
         windows = liveWindows
 
@@ -300,7 +305,7 @@ final class WallpaperEngine {
 
     private func makeWindow(for screen: NSScreen, displayID: String) -> DesktopWindow {
         let window = DesktopWindow(screen: screen, displayID: displayID)
-        NotificationCenter.default.addObserver(
+        occlusionObservers[displayID] = NotificationCenter.default.addObserver(
             forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.updatePlayback() }
@@ -322,6 +327,8 @@ final class WallpaperEngine {
     private func wallpaperDidChange(_ id: UUID) {
         if let wallpaper = store.wallpaper(id: id), wallpaper.isLive {
             for window in windows.values where window.wallpaperID == id { window.showVisualizer(wallpaper) }
+            // An edit can start or stop the wallpaper's use of audio.
+            updatePlayback()
         } else {
             refresh(id)
         }
@@ -430,6 +437,23 @@ final class WallpaperEngine {
 
     // MARK: System events
 
+    /// Every defaults write lands here, including window frames AppKit saves
+    /// many times a second during a drag, so re-plan once per burst.
+    private func defaultsDidChange() {
+        guard !defaultsChangePending else { return }
+        defaultsChangePending = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.defaultsChangePending = false
+                self.updateCoverageMonitoring()
+                self.players.keys.forEach(self.refresh)
+                self.updatePlayback()
+                self.syncSystemWallpaper()
+            }
+        }
+    }
+
     private func observeSystem() {
         let center = NotificationCenter.default
         let workspace = NSWorkspace.shared.notificationCenter
@@ -449,12 +473,7 @@ final class WallpaperEngine {
             engine.updatePlayback()
         }
         on(center, .NSProcessInfoPowerStateDidChange) { $0.updatePlayback() }
-        on(center, UserDefaults.didChangeNotification) { engine in
-            engine.updateCoverageMonitoring()
-            engine.players.keys.forEach(engine.refresh)
-            engine.updatePlayback()
-            engine.syncSystemWallpaper()
-        }
+        on(center, UserDefaults.didChangeNotification) { $0.defaultsDidChange() }
         center.addObserver(forName: .libraryDidChange, object: nil, queue: .main) { [weak self] note in
             let id = note.userInfo?["id"] as? UUID
             MainActor.assumeIsolated {
