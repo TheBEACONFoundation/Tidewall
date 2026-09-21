@@ -3,16 +3,39 @@
 //
 //   swiftc -O Scripts/make-sample.swift -o .build/tools/make-sample && .build/tools/make-sample Resources/Aurora.mov
 //   .build/tools/make-sample --still frame.png 0.25   # preview one frame at 25% of the loop
+//
+// Options for benchmark media (defaults produce the bundled sample):
+//   --size 3840x2160  --fps 60  --seconds 10  --codec h264|hevc|prores  --bitrate 40000000
 
 import AVFoundation
 import CoreImage
 import CoreImage.CIFilterBuiltins
 import Foundation
 
-let width = 1920, height = 1080
-let fps = 30
-let loopSeconds = 20.0
+var options: [String: String] = [:]
+var positional: [String] = []
+do {
+    var it = CommandLine.arguments.dropFirst().makeIterator()
+    while let arg = it.next() {
+        if arg.hasPrefix("--"), arg != "--still", let value = it.next() {
+            options[String(arg.dropFirst(2))] = value
+        } else {
+            positional.append(arg)
+        }
+    }
+}
+let size = (options["size"] ?? "1920x1080").split(separator: "x").compactMap { Int($0) }
+let width = size.count == 2 ? size[0] : 1920
+let height = size.count == 2 ? size[1] : 1080
+let fps = Int(options["fps"] ?? "") ?? 30
+let loopSeconds = Double(options["seconds"] ?? "") ?? 20.0
 let frameCount = Int(loopSeconds) * fps
+let codec: AVVideoCodecType = switch options["codec"] {
+    case "h264": .h264
+    case "prores": .proRes422
+    default: .hevc
+}
+let bitrate = Int(options["bitrate"] ?? "") ?? 9_000_000
 
 struct Blob {
     var color: (Double, Double, Double)
@@ -97,7 +120,7 @@ func frame(at progress: Double) -> CIImage {
 }
 
 let context = CIContext(options: [.workingColorSpace: CGColorSpace(name: CGColorSpace.sRGB)!])
-let args = CommandLine.arguments
+let args = [CommandLine.arguments[0]] + positional
 
 if args.count >= 3 && args[1] == "--still" {
     let progress = args.count >= 4 ? Double(args[3]) ?? 0 : 0
@@ -116,21 +139,24 @@ guard args.count >= 2 else {
 let output = URL(fileURLWithPath: args[1])
 try? FileManager.default.removeItem(at: output)
 let writer = try AVAssetWriter(outputURL: output, fileType: .mov)
-let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
-    AVVideoCodecKey: AVVideoCodecType.hevc,
+var videoSettings: [String: Any] = [
+    AVVideoCodecKey: codec,
     AVVideoWidthKey: width,
     AVVideoHeightKey: height,
-    AVVideoCompressionPropertiesKey: [
-        AVVideoAverageBitRateKey: 9_000_000,
-        AVVideoExpectedSourceFrameRateKey: fps,
-        AVVideoMaxKeyFrameIntervalKey: fps * 2,
-    ],
     AVVideoColorPropertiesKey: [
         AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_709_2,
         AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_709_2,
         AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2,
     ],
-])
+]
+if codec != .proRes422 {
+    videoSettings[AVVideoCompressionPropertiesKey] = [
+        AVVideoAverageBitRateKey: bitrate,
+        AVVideoExpectedSourceFrameRateKey: fps,
+        AVVideoMaxKeyFrameIntervalKey: fps * 2,
+    ]
+}
+let input = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
 input.expectsMediaDataInRealTime = false
 let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: [
     kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,

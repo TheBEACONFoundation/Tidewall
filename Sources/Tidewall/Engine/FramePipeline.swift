@@ -93,6 +93,23 @@ enum FramePipeline {
                       width: size.width, height: size.height)
     }
 
+    /// The largest fraction of the video's resolution any of these screens can
+    /// show at 1:1 pixels for the framing settings (capped at 1). Below 1, a
+    /// downscaled copy looks identical on the desktop.
+    static func requiredScale(videoSize: CGSize, screenPixelSizes: [CGSize], settings s: WallpaperSettings) -> Double {
+        guard videoSize.width > 0, videoSize.height > 0, !screenPixelSizes.isEmpty else { return 1 }
+        var needed = 0.0
+        for screen in screenPixelSizes {
+            let kx = screen.width / videoSize.width, ky = screen.height / videoSize.height
+            let k: Double = switch s.scaling {
+            case .fill, .stretch: max(kx, ky)
+            case .fit: min(kx, ky)
+            }
+            needed = max(needed, k * s.zoom)
+        }
+        return min(1, needed)
+    }
+
     /// Renders a single frame exactly as it appears on a screen of `pixelSize`
     /// (used for the static system wallpaper snapshot).
     static func renderScreen(frame: CGImage, pixelSize: CGSize, settings: WallpaperSettings) -> CGImage? {

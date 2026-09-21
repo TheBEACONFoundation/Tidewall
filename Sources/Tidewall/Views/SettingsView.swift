@@ -7,7 +7,7 @@ struct SettingsView: View {
                 .frame(width: 500, height: 430)
                 .tabItem { Label("General", systemImage: "gearshape") }
             PerformanceSettings()
-                .frame(width: 500, height: 300)
+                .frame(width: 500, height: 470)
                 .tabItem { Label("Performance", systemImage: "gauge.with.dots.needle.33percent") }
         }
     }
@@ -73,20 +73,44 @@ private struct GeneralSettings: View {
 }
 
 private struct PerformanceSettings: View {
+    @AppStorage(Preferences.optimizePlayback) private var optimizePlayback = true
     @AppStorage(Preferences.pauseWhenHidden) private var pauseWhenHidden = true
     @AppStorage(Preferences.pauseInLowPowerMode) private var pauseInLowPowerMode = true
     @AppStorage(Preferences.pauseOnBattery) private var pauseOnBattery = false
+    @State private var copiesSize: Int64 = RenditionManager.shared.diskUsage
 
     var body: some View {
         Form {
             Section {
-                Toggle("Pause when the desktop is hidden", isOn: $pauseWhenHidden)
+                Toggle("Optimize playback", isOn: $optimizePlayback)
+                LabeledContent("Playback copies") {
+                    HStack {
+                        Text(ByteCountFormatter.string(fromByteCount: copiesSize, countStyle: .file))
+                            .foregroundStyle(.secondary)
+                        Button("Delete") {
+                            RenditionManager.shared.removeAll()
+                            copiesSize = RenditionManager.shared.diskUsage
+                            WallpaperEngine.shared.reconcile()
+                        }
+                        .disabled(copiesSize == 0)
+                    }
+                }
+            } header: {
+                Text("Efficiency")
+            } footer: {
+                Text("Color adjustments are baked into a copy a few seconds after you stop editing, so the desktop plays it without filtering every frame. Videos larger than your displays and ones macOS can't decode in hardware get a copy too. Originals are never changed.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                Toggle("Pause when windows cover the desktop", isOn: $pauseWhenHidden)
                 Toggle("Pause in Low Power Mode", isOn: $pauseInLowPowerMode)
                 Toggle("Pause on battery power", isOn: $pauseOnBattery)
             } header: {
                 Text("Automatically pause")
             } footer: {
-                Text("A wallpaper counts as hidden when full-screen apps or windows cover it completely. Playback always stops while the screen is locked, asleep or showing a screen saver.")
+                Text("A wallpaper pauses when full-screen apps or windows cover nearly all of its display. Playback always stops while the screen is locked, asleep or showing a screen saver.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

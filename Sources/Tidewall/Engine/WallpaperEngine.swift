@@ -45,15 +45,26 @@ final class WallpaperEngine {
         }
     }
 
+    /// True while every live wallpaper is paused because windows hide it.
+    private(set) var isPausedWhileHidden = false
+
     @ObservationIgnored private var windows: [String: DesktopWindow] = [:]
     @ObservationIgnored private var players: [UUID: LoopingPlayer] = [:]
+    @ObservationIgnored private var sources: [UUID: PlaybackSource] = [:]
+    /// The player each wallpaper's windows are showing; differs from
+    /// `players` while a replacement is being prepared.
+    @ObservationIgnored private var onScreen: [UUID: LoopingPlayer] = [:]
+    @ObservationIgnored private var swaps: [UUID: Task<Void, Never>] = [:]
     @ObservationIgnored private var suspensions: Set<String> = []
+    @ObservationIgnored private var coveredDisplays: Set<String> = []
+    @ObservationIgnored private var coverageTimer: Timer?
     @ObservationIgnored private var started = false
 
     private static let assignmentsKey = "assignments"
     private static let pausedKey = "userPaused"
 
     private let store = LibraryStore.shared
+    private let renditions = RenditionManager.shared
 
     // MARK: Lifecycle
 
@@ -63,6 +74,7 @@ final class WallpaperEngine {
         loadState()
         observeSystem()
         PowerMonitor.start()
+        renditions.prune(keeping: Set(store.wallpapers.map(\.id)), removeTemporary: true)
         reconcile()
     }
 
@@ -146,20 +158,107 @@ final class WallpaperEngine {
         for (id, player) in players where !neededPlayers.contains(id) {
             player.invalidate()
             players[id] = nil
+            sources[id] = nil
+            swaps.removeValue(forKey: id)?.cancel()
+            if let shown = onScreen.removeValue(forKey: id), shown !== player { shown.invalidate() }
         }
 
+        updateCoverageMonitoring()
         updatePlayback()
         syncSystemWallpaper()
     }
 
+    // MARK: Players
+
     private func player(for wallpaper: Wallpaper) -> LoopingPlayer {
-        if let existing = players[wallpaper.id] {
-            existing.update(wallpaper)
+        let source = playbackSource(for: wallpaper)
+        guard let existing = players[wallpaper.id], let current = sources[wallpaper.id] else {
+            let player = makePlayer(for: source)
+            players[wallpaper.id] = player
+            sources[wallpaper.id] = source
+            onScreen[wallpaper.id] = player
+            return player
+        }
+        guard source.url != current.url else {
+            sources[wallpaper.id] = source
+            existing.update(source.wallpaper)
             return existing
         }
-        let player = LoopingPlayer(wallpaper: wallpaper, url: store.mediaURL(for: wallpaper))
-        players[wallpaper.id] = player
-        return player
+        return replacePlayer(existing, for: wallpaper.id, with: source)
+    }
+
+    private func makePlayer(for source: PlaybackSource) -> LoopingPlayer {
+        LoopingPlayer(wallpaper: source.wallpaper, url: source.url)
+    }
+
+    /// Switches to a new source (e.g. a finished playback copy) without a
+    /// visible cut: the replacement is loaded and synced to the current
+    /// position before the windows cross over to it.
+    private func replacePlayer(_ old: LoopingPlayer, for id: UUID, with source: PlaybackSource) -> LoopingPlayer {
+        // If an earlier replacement never made it on screen, drop it and hand
+        // over from whatever the windows are actually showing.
+        let outgoing = onScreen[id] ?? old
+        if old !== outgoing { old.invalidate() }
+
+        let replacement = makePlayer(for: source)
+        players[id] = replacement
+        sources[id] = source
+        swaps[id]?.cancel()
+        swaps[id] = Task { [weak self] in
+            await replacement.prepare(at: { outgoing.currentTime })
+            guard let self, !Task.isCancelled, self.players[id] === replacement else { return }
+            self.updatePlayback()
+            for window in self.windows.values where window.wallpaperID == id {
+                window.playerView.transition(to: replacement.player)
+            }
+            self.onScreen[id] = replacement
+            self.swaps[id] = nil
+            // The old picture stays up until the new layer has a frame.
+            try? await Task.sleep(for: .seconds(2))
+            outgoing.invalidate()
+            // A copy of a look that's no longer used (e.g. adjustments reset).
+            if self.sources[id]?.url != outgoing.url { self.renditions.deleteCopy(at: outgoing.url) }
+        }
+        return replacement
+    }
+
+    /// The cheapest way to show `wallpaper` at full quality: its baked playback
+    /// copy when one is ready, otherwise the original with live filters (and a
+    /// copy scheduled in the background).
+    private func playbackSource(for wallpaper: Wallpaper) -> PlaybackSource {
+        let screens = displays.filter { assignments.wallpaperID(for: $0.id) == wallpaper.id }.map(\.pixelSize)
+        let requiredScale = FramePipeline.requiredScale(videoSize: wallpaper.videoSize, screenPixelSizes: screens,
+                                                        settings: wallpaper.settings)
+        let live = PlaybackSource(url: store.mediaURL(for: wallpaper), wallpaper: wallpaper)
+
+        guard Preferences.bool(Preferences.optimizePlayback), let info = renditions.info(for: wallpaper) else {
+            renditions.cancelPending(for: wallpaper.id)
+            return live
+        }
+        guard let recipe = RenditionRecipe.make(for: wallpaper, info: info, requiredScale: requiredScale) else {
+            renditions.cancelPending(for: wallpaper.id)
+            // No copy needed anymore; one still on screen is removed after its swap.
+            if let current = sources[wallpaper.id]?.url, renditions.isCopy(current) { return live }
+            renditions.discardCopies(of: wallpaper.id)
+            return live
+        }
+        if let url = renditions.readyURL(for: recipe, wallpaperID: wallpaper.id) {
+            renditions.cancelPending(for: wallpaper.id)
+            var baked = wallpaper
+            baked.settings.adjustments = Adjustments()
+            return PlaybackSource(url: url, wallpaper: baked)
+        }
+        renditions.schedule(recipe, for: wallpaper)
+        return live
+    }
+
+    /// Re-evaluates the source of a wallpaper that's on the desktop.
+    private func refresh(_ id: UUID) {
+        guard players[id] != nil, let wallpaper = store.wallpaper(id: id) else { return }
+        _ = player(for: wallpaper)
+        for window in windows.values where window.wallpaperID == id {
+            window.playerView.configure(with: wallpaper)
+        }
     }
 
     private func makeWindow(for screen: NSScreen, displayID: String) -> DesktopWindow {
@@ -184,11 +283,7 @@ final class WallpaperEngine {
     }
 
     private func wallpaperDidChange(_ id: UUID) {
-        guard let wallpaper = store.wallpaper(id: id) else { return }
-        players[id]?.update(wallpaper)
-        for window in windows.values where window.wallpaperID == id {
-            window.playerView.configure(with: wallpaper)
-        }
+        refresh(id)
         syncSystemWallpaper()
     }
 
@@ -207,15 +302,61 @@ final class WallpaperEngine {
         if pauseReason != reason { pauseReason = reason }
         let pauseWhenHidden = Preferences.bool(Preferences.pauseWhenHidden)
 
+        var hiddenCount = 0
         for (id, player) in players {
             var shouldPlay = reason == nil
             if shouldPlay && pauseWhenHidden {
-                // Covered by full-screen apps or windows on every display it's on.
+                // Only play if at least one display showing it can be seen.
                 shouldPlay = windows.values.contains {
                     $0.wallpaperID == id && $0.occlusionState.contains(.visible)
+                        && !coveredDisplays.contains($0.displayID)
                 }
+                if !shouldPlay { hiddenCount += 1 }
             }
             player.setPlaying(shouldPlay)
+        }
+        let hidden = !players.isEmpty && hiddenCount == players.count
+        if isPausedWhileHidden != hidden { isPausedWhileHidden = hidden }
+    }
+
+    // MARK: Coverage
+
+    /// Checks window coverage on a slow timer (plus app and Space switches)
+    /// while a wallpaper is showing. One window-list query costs well under a
+    /// millisecond, and it lets playback stop for most of the working day.
+    private func updateCoverageMonitoring() {
+        let wanted = !windows.isEmpty && Preferences.bool(Preferences.pauseWhenHidden)
+        if wanted, coverageTimer == nil {
+            let timer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.updateCoverage() }
+            }
+            timer.tolerance = 1
+            RunLoop.main.add(timer, forMode: .common)
+            coverageTimer = timer
+            updateCoverage()
+        } else if !wanted, let timer = coverageTimer {
+            timer.invalidate()
+            coverageTimer = nil
+            if !coveredDisplays.isEmpty {
+                coveredDisplays = []
+                updatePlayback()
+            }
+        }
+    }
+
+    private func updateCoverage() {
+        guard coverageTimer != nil else { return }
+        let frames = DesktopCoverage.windowFrames()
+        var covered: Set<String> = []
+        for display in displays where windows[display.id] != nil {
+            let fraction = DesktopCoverage.coveredFraction(of: display.quartzVisibleFrame, by: frames)
+            // Hysteresis keeps a window dragged near the threshold from flapping.
+            let threshold = coveredDisplays.contains(display.id) ? 0.85 : 0.95
+            if fraction >= threshold { covered.insert(display.id) }
+        }
+        if covered != coveredDisplays {
+            coveredDisplays = covered
+            updatePlayback()
         }
     }
 
@@ -249,6 +390,8 @@ final class WallpaperEngine {
         on(center, .powerSourceDidChange) { $0.updatePlayback() }
         on(center, .NSProcessInfoPowerStateDidChange) { $0.updatePlayback() }
         on(center, UserDefaults.didChangeNotification) { engine in
+            engine.updateCoverageMonitoring()
+            engine.players.keys.forEach(engine.refresh)
             engine.updatePlayback()
             engine.syncSystemWallpaper()
         }
@@ -256,8 +399,23 @@ final class WallpaperEngine {
             let id = note.userInfo?["id"] as? UUID
             MainActor.assumeIsolated {
                 guard let self else { return }
-                if let id { self.wallpaperDidChange(id) } else { self.reconcile() }
+                if let id {
+                    self.wallpaperDidChange(id)
+                } else {
+                    self.renditions.prune(keeping: Set(self.store.wallpapers.map(\.id)))
+                    self.reconcile()
+                }
             }
+        }
+        center.addObserver(forName: .renditionsDidChange, object: nil, queue: .main) { [weak self] note in
+            let id = note.userInfo?["id"] as? UUID
+            MainActor.assumeIsolated {
+                if let id { self?.refresh(id) }
+            }
+        }
+        for name in [NSWorkspace.didActivateApplicationNotification, NSWorkspace.activeSpaceDidChangeNotification,
+                     NSWorkspace.didHideApplicationNotification, NSWorkspace.didUnhideApplicationNotification] {
+            on(workspace, name) { $0.updateCoverage() }
         }
 
         // Stop decoding whenever nobody can see the desktop.

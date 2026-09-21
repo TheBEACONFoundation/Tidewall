@@ -33,7 +33,11 @@ Tidewall is a native SwiftUI + AppKit app in the spirit of Wallpaper Engine. Imp
 - **Live edits**: changes save automatically and update the desktop as you drag the sliders.
 - **Multiple displays**: a different wallpaper on each screen, set from a to-scale map of your display arrangement. Screens showing the same wallpaper share one decoder.
 - **Menu bar switcher** with thumbnails and pause/resume (⌥⌘P).
-- **Easy on the battery**: pauses when full-screen apps or windows cover the desktop, and while the screen is locked, asleep or showing a screen saver. It can also pause in Low Power Mode or on battery. It never keeps the display awake.
+- **Easy on the battery**:
+  - Color adjustments are baked into a playback copy, so a styled wallpaper costs no more than a plain video.
+  - It pauses when windows cover the desktop, and while the screen is locked, asleep or showing a screen saver.
+  - It can also pause in Low Power Mode or on battery. It never keeps the display awake.
+  - See [Performance](#performance) for measurements.
 - **Matching still** (optional): sets the macOS desktop picture to the loop's first frame, so Mission Control, the lock screen and the desktop after quitting all match.
 - Open at login, and an optional Dock icon.
 
@@ -85,6 +89,31 @@ Scripts/package.sh
 
 Pushing a tag like `v1.1.0` runs the [Release workflow](.github/workflows/release.yml), which tests, packages and publishes a GitHub Release. If the signing secrets listed at the top of that workflow are configured, it signs and notarizes too.
 
+## Performance
+
+A live wallpaper has three costs:
+- **Decoding**, which Apple's media engine handles in hardware.
+- **Compositing**, because WindowServer redraws the screen for every video frame.
+- **Filters**, which apply adjustments to every frame on the GPU.
+
+Tidewall removes the costs it can:
+
+- **Baked adjustments.** A few seconds after you stop editing, the look is encoded once into an HEVC playback copy at the highest quality preset. The desktop then plays that copy with no per-frame filtering. The same pass also downscales videos much larger than your displays, and re-encodes codecs your Mac can't decode in hardware. Trim, speed, framing and audio stay live, so changing them never re-encodes. Copies measure 51–56 dB PSNR against live filtering, which is visually lossless.
+- **Pausing when covered.** Every 2 seconds, and on every app or Space switch, Tidewall checks how much of each display's desktop is covered by windows; the check costs about 0.3 ms. At 95% coverage it pauses, removing all three costs. The occlusion check macOS provides only fires at 100%, and the translucent menu bar keeps it from ever reaching that.
+- **Muted means silent.** A muted player's audio tracks are disabled, so the audio pipeline and hardware can sleep.
+
+Measured on an M5 Max with `Scripts/benchmark.sh` (median of 3 runs, 4K60 H.264, blur + saturation + vignette):
+
+| | GPU | Tidewall CPU | WindowServer CPU* |
+| --- | ---: | ---: | ---: |
+| Live filters (v1.0.0) | 27.2% | 28.6% | +10.2% |
+| Baked copy (now) | 0.7% | 2.3% | +9.5% |
+| Paused while covered (now) | 0.0% | 0.1% | ≈ idle |
+
+\* Change from idle. WindowServer's baseline depends on what else is on screen.
+
+At 1080p the same look went from 20.7% to 1.3% CPU. Frame rate and codec matter much less than you might expect: 30 vs 60 fps and H.264 vs HEVC differed by only 1–2% CPU. So Tidewall keeps the source's frame rate.
+
 ## How it works
 
 | Piece | Where |
@@ -93,10 +122,11 @@ Pushing a tag like `v1.1.0` runs the [Release workflow](.github/workflows/releas
 | `AVQueuePlayer` + `AVPlayerLooper` for gapless loops of a trimmed range. A Core Image `AVVideoComposition` is installed only while an adjustment is active. | [`Engine/LoopingPlayer.swift`](Sources/Tidewall/Engine/LoopingPlayer.swift) |
 | Keeps windows and players in sync with displays, assignments, occlusion, sleep/lock and power state | [`Engine/WallpaperEngine.swift`](Sources/Tidewall/Engine/WallpaperEngine.swift) |
 | Framing and filter math shared by the desktop, thumbnails and stills | [`Engine/FramePipeline.swift`](Sources/Tidewall/Engine/FramePipeline.swift) |
+| Playback copies: when one helps, what it bakes, and the HEVC export | [`Engine/Rendition.swift`](Sources/Tidewall/Engine/Rendition.swift), [`Model/RenditionManager.swift`](Sources/Tidewall/Model/RenditionManager.swift) |
 | Library storage, import and GIF → H.264 conversion | [`Model/`](Sources/Tidewall/Model) |
 | Library window, editor, displays, menu bar, settings | [`Views/`](Sources/Tidewall/Views) |
 
-Your library lives in `~/Library/Application Support/Tidewall`. Deleting a wallpaper moves its video to the Trash. Preferences and display assignments are stored in the `io.github.thebeaconfoundation.Tidewall` defaults domain.
+Your library lives in `~/Library/Application Support/Tidewall`, and playback copies are kept in its `Renditions` folder. You can see how much space they use, or delete them, in **Settings → Performance**. Deleting a wallpaper moves its video to the Trash. Preferences and display assignments are stored in the `io.github.thebeaconfoundation.Tidewall` defaults domain.
 
 The app icon and the Aurora sample are generated by [`Scripts/make-icon.swift`](Scripts/make-icon.swift) and [`Scripts/make-sample.swift`](Scripts/make-sample.swift). The sample is a 20-second loop in which every motion is periodic, so it repeats seamlessly.
 

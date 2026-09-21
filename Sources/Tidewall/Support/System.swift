@@ -8,6 +8,9 @@ struct Display: Identifiable, Hashable {
     let id: String
     let name: String
     let frame: CGRect
+    /// The visible frame (excluding menu bar and Dock) in Quartz global
+    /// coordinates (top-left origin), as used by window lists.
+    let quartzVisibleFrame: CGRect
     let scale: CGFloat
     let isMain: Bool
 
@@ -20,20 +23,27 @@ struct Display: Identifiable, Hashable {
     }
 
     static var all: [Display] {
-        NSScreen.screens.enumerated().map { index, screen in
-            Display(id: identifier(for: screen),
+        let primaryTop = NSScreen.screens.first?.frame.maxY ?? 0
+        return NSScreen.screens.enumerated().map { index, screen in
+            let visible = screen.visibleFrame
+            return Display(id: identifier(for: screen),
                     name: screen.localizedName,
                     frame: screen.frame,
+                    quartzVisibleFrame: CGRect(x: visible.minX, y: primaryTop - visible.maxY,
+                                               width: visible.width, height: visible.height),
                     scale: screen.backingScaleFactor,
                     isMain: index == 0)
         }
     }
 
+    static func directDisplayID(for screen: NSScreen) -> CGDirectDisplayID? {
+        (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber).map { CGDirectDisplayID($0.uint32Value) }
+    }
+
     static func identifier(for screen: NSScreen) -> String {
-        guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
+        guard let displayID = directDisplayID(for: screen) else {
             return screen.localizedName
         }
-        let displayID = CGDirectDisplayID(number.uint32Value)
         if let uuid = CGDisplayCreateUUIDFromDisplayID(displayID)?.takeRetainedValue(),
            let string = CFUUIDCreateString(nil, uuid) {
             return string as String
@@ -42,7 +52,44 @@ struct Display: Identifiable, Hashable {
     }
 }
 
+/// Measures how much of a display's desktop is hidden behind app windows.
+/// Window frames are available without Screen Recording permission.
+enum DesktopCoverage {
+    /// Frames of on-screen, normal-level windows (all apps, including ours).
+    static func windowFrames() -> [CGRect] {
+        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+                as? [[String: Any]] else { return [] }
+        return list.compactMap { info in
+            guard (info[kCGWindowLayer as String] as? Int) == 0,
+                  (info[kCGWindowAlpha as String] as? Double ?? 1) > 0.5,
+                  let bounds = info[kCGWindowBounds as String],
+                  let rect = CGRect(dictionaryRepresentation: bounds as! CFDictionary),
+                  rect.width >= 80, rect.height >= 80
+            else { return nil }
+            return rect
+        }
+    }
+
+    /// Fraction of `area` covered by `windows`, sampled on a grid (cheap and
+    /// exact enough for a pause decision).
+    static func coveredFraction(of area: CGRect, by windows: [CGRect], columns: Int = 32, rows: Int = 20) -> Double {
+        guard !area.isEmpty else { return 0 }
+        let relevant = windows.filter { $0.intersects(area) }
+        guard !relevant.isEmpty else { return 0 }
+        var covered = 0
+        for row in 0..<rows {
+            let y = area.minY + (Double(row) + 0.5) * area.height / Double(rows)
+            for column in 0..<columns {
+                let x = area.minX + (Double(column) + 0.5) * area.width / Double(columns)
+                if relevant.contains(where: { $0.contains(CGPoint(x: x, y: y)) }) { covered += 1 }
+            }
+        }
+        return Double(covered) / Double(rows * columns)
+    }
+}
+
 enum Preferences {
+    static let optimizePlayback = "optimizePlayback"
     static let pauseWhenHidden = "pauseWhenHidden"
     static let pauseInLowPowerMode = "pauseInLowPowerMode"
     static let pauseOnBattery = "pauseOnBattery"
@@ -51,6 +98,7 @@ enum Preferences {
 
     static func register() {
         UserDefaults.standard.register(defaults: [
+            optimizePlayback: true,
             pauseWhenHidden: true,
             pauseInLowPowerMode: true,
             pauseOnBattery: false,

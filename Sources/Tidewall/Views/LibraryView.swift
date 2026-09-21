@@ -77,6 +77,7 @@ private struct PlaybackStatusView: View {
     private func statusDetail(activeCount: Int) -> String {
         if activeCount == 0 { return "Pick a wallpaper to start" }
         if let reason = engine.pauseReason, reason != .user { return reason.title }
+        if engine.isPausedWhileHidden { return "Paused while windows cover it" }
         return activeCount == 1 ? "On 1 display" : "On \(activeCount) displays"
     }
 }

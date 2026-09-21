@@ -116,6 +116,7 @@ struct MenuBarView: View {
         let active = engine.displays.filter { engine.wallpaperID(for: $0.id) != nil }.count
         if active == 0 { return "No live wallpaper" }
         if let reason = engine.pauseReason { return reason.title }
+        if engine.isPausedWhileHidden { return "Paused while windows cover it" }
         return active == 1 ? "Playing on 1 display" : "Playing on \(active) displays"
     }
 }

@@ -4,7 +4,9 @@ import AVFoundation
 /// Hosts a player layer and positions it according to the wallpaper's framing
 /// (scaling, zoom, focus, mirroring). Used on the desktop and in the editor.
 final class WallpaperPlayerView: NSView {
-    private let playerLayer = AVPlayerLayer()
+    private var playerLayer = WallpaperPlayerView.makePlayerLayer()
+    private var incomingLayer: AVPlayerLayer?
+    private var readyObservation: NSKeyValueObservation?
     private var settings = WallpaperSettings()
     private var videoSize: CGSize = .zero
 
@@ -13,16 +15,63 @@ final class WallpaperPlayerView: NSView {
         wantsLayer = true
         layer?.masksToBounds = true
         layer?.backgroundColor = NSColor.black.cgColor
-        playerLayer.videoGravity = .resize
-        playerLayer.actions = ["bounds": NSNull(), "position": NSNull(), "transform": NSNull()]
         layer?.addSublayer(playerLayer)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    private static func makePlayerLayer() -> AVPlayerLayer {
+        let layer = AVPlayerLayer()
+        layer.videoGravity = .resize
+        layer.actions = ["bounds": NSNull(), "position": NSNull(), "transform": NSNull()]
+        return layer
+    }
+
     var player: AVPlayer? {
-        get { playerLayer.player }
-        set { if playerLayer.player !== newValue { playerLayer.player = newValue } }
+        get { incomingLayer?.player ?? playerLayer.player }
+        set {
+            guard player !== newValue else { return }
+            cancelTransition()
+            playerLayer.player = newValue
+        }
+    }
+
+    /// Switches to another player showing the same wallpaper (e.g. its
+    /// optimized copy). The current picture stays up until the new one has a
+    /// frame ready, so the swap is invisible.
+    func transition(to newPlayer: AVPlayer) {
+        guard player !== newPlayer else { return }
+        guard playerLayer.player != nil else {
+            player = newPlayer
+            return
+        }
+        cancelTransition()
+        let incoming = Self.makePlayerLayer()
+        incoming.player = newPlayer
+        layer?.insertSublayer(incoming, below: playerLayer)
+        incomingLayer = incoming
+        needsLayout = true
+        readyObservation = incoming.observe(\.isReadyForDisplay, options: [.initial, .new]) { [weak self] layer, _ in
+            guard layer.isReadyForDisplay else { return }
+            DispatchQueue.main.async { self?.finishTransition(to: layer) }
+        }
+    }
+
+    private func finishTransition(to incoming: AVPlayerLayer) {
+        guard incoming === incomingLayer else { return }
+        readyObservation = nil
+        incomingLayer = nil
+        let outgoing = playerLayer
+        playerLayer = incoming
+        outgoing.player = nil
+        outgoing.removeFromSuperlayer()
+    }
+
+    private func cancelTransition() {
+        readyObservation = nil
+        incomingLayer?.player = nil
+        incomingLayer?.removeFromSuperlayer()
+        incomingLayer = nil
     }
 
     func configure(with wallpaper: Wallpaper) {
@@ -38,9 +87,11 @@ final class WallpaperPlayerView: NSView {
         let rect = FramePipeline.videoRect(in: bounds, videoSize: videoSize, settings: settings)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        playerLayer.bounds = CGRect(origin: .zero, size: rect.size)
-        playerLayer.position = CGPoint(x: rect.midX, y: rect.midY)
-        playerLayer.setAffineTransform(settings.mirrored ? CGAffineTransform(scaleX: -1, y: 1) : .identity)
+        for layer in [playerLayer, incomingLayer].compactMap({ $0 }) {
+            layer.bounds = CGRect(origin: .zero, size: rect.size)
+            layer.position = CGPoint(x: rect.midX, y: rect.midY)
+            layer.setAffineTransform(settings.mirrored ? CGAffineTransform(scaleX: -1, y: 1) : .identity)
+        }
         CATransaction.commit()
     }
 }
@@ -76,10 +127,14 @@ final class DesktopWindow: NSWindow {
     // Borderless windows must be allowed to cover the menu bar area.
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
 
+    /// Shows `wallpaper`. When it's already showing, the current player is
+    /// kept: the engine swaps players itself once a replacement is ready.
     func show(_ wallpaper: Wallpaper, player: LoopingPlayer) {
+        if wallpaperID != wallpaper.id || playerView.player == nil {
+            playerView.player = player.player
+        }
         wallpaperID = wallpaper.id
         playerView.configure(with: wallpaper)
-        playerView.player = player.player
         if !isVisible { orderFrontRegardless() }
     }
 

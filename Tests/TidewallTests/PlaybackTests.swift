@@ -1,3 +1,4 @@
+import AVFAudio
 import AVFoundation
 import Foundation
 import ImageIO
@@ -172,5 +173,83 @@ struct AnimatedImageTests {
         await #expect(throws: ImportError.self) {
             try await AnimatedImageConverter.convert(png, to: dir.appendingPathComponent("out.mov"))
         }
+    }
+}
+
+@Suite("Player hand-off", .serialized)
+@MainActor
+struct HandOffTests {
+    @Test func preparedPlayerLandsOnRequestedTime() async {
+        let player = LoopingPlayer(wallpaper: .sample, url: sampleMovie)
+        defer { player.invalidate() }
+        await player.prepare(at: { 7.5 })
+        #expect(player.player.currentItem?.status == .readyToPlay)
+        #expect(abs(player.currentTime - 7.5) < 0.05)
+    }
+}
+
+@Suite("Muted audio", .serialized)
+@MainActor
+struct MutedAudioTests {
+    /// Aurora's first 4 seconds with a sine-wave soundtrack.
+    private func makeClipWithAudio(in dir: URL) async throws -> URL {
+        let tone = dir.appendingPathComponent("tone.m4a")
+        let format = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 1)!
+        let file = try AVAudioFile(forWriting: tone, settings: [
+            AVFormatIDKey: kAudioFormatMPEG4AAC, AVSampleRateKey: 44_100, AVNumberOfChannelsKey: 1,
+        ])
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 44_100 * 4)!
+        buffer.frameLength = buffer.frameCapacity
+        for i in 0..<Int(buffer.frameLength) {
+            buffer.floatChannelData![0][i] = 0.2 * sin(2 * .pi * 440 * Float(i) / 44_100)
+        }
+        try file.write(from: buffer)
+        file.close()
+
+        // Tracks only weakly reference their asset, so keep the assets alive.
+        let videoAsset = AVURLAsset(url: sampleMovie), audioAsset = AVURLAsset(url: tone)
+        let composition = AVMutableComposition()
+        let video = try await videoAsset.loadTracks(withMediaType: .video)[0]
+        let audio = try await audioAsset.loadTracks(withMediaType: .audio)[0]
+        // AAC priming makes the encoded tone a touch shorter than 4 seconds.
+        let audioRange = try await audio.load(.timeRange)
+        let range = CMTimeRange(start: .zero, duration: min(CMTime(seconds: 3.5, preferredTimescale: 600), audioRange.duration))
+        try composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)!
+            .insertTimeRange(range, of: video, at: .zero)
+        try composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)!
+            .insertTimeRange(range, of: audio, at: .zero)
+        let output = dir.appendingPathComponent("with-audio.mov")
+        let session = try #require(AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetPassthrough))
+        try await session.export(to: output, as: .mov)
+        withExtendedLifetime((videoAsset, audioAsset)) {}
+        return output
+    }
+
+    private func audioStates(_ player: LoopingPlayer) -> [Bool] {
+        player.player.items().flatMap { $0.tracks.filter { $0.assetTrack?.mediaType == .audio }.map(\.isEnabled) }
+    }
+
+    @Test func mutedPlayersDontRunTheAudioPipeline() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("tidewall-tests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = try await makeClipWithAudio(in: dir)
+
+        var wallpaper = Wallpaper.sample
+        wallpaper.duration = 3.5
+        wallpaper.settings.trimEnd = 1.5
+        let player = LoopingPlayer(wallpaper: wallpaper, url: url)
+        defer { player.invalidate() }
+        player.setPlaying(true)
+        try? await Task.sleep(for: .seconds(2.5))   // past a loop, so recycled items are covered too
+
+        let muted = audioStates(player)
+        #expect(!muted.isEmpty)
+        #expect(muted.allSatisfy { !$0 }, "audio tracks should be disabled while muted: \(muted)")
+
+        wallpaper.settings.muted = false
+        player.update(wallpaper)
+        try? await Task.sleep(for: .milliseconds(200))
+        #expect(audioStates(player).allSatisfy { $0 }, "audio should come back when unmuted")
     }
 }
