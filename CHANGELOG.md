@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+**Pulse**, a live audio visualizer wallpaper:
+- **Hears your Mac:** it listens to the system audio mix through a Core Audio process tap. The audio is analyzed in memory and never recorded.
+- **The picture:** a ring spectrum, a bass-driven core, beat shockwaves, and particles that speed up with loudness, rendered on the GPU.
+- **Options:** five color schemes, plus sensitivity, motion and quality settings, in a live editor.
+- **Easy on power:** it listens only while it's visible and something is playing, drops to 20 fps when idle, and pauses when covered.
+- **Arrives automatically** in existing libraries.
+
 Battery-reactive wallpapers:
 - A wallpaper can hold one video per battery state, and cross-fades to the matching one as the charge changes. It uses the same thresholds as the Lantern battery gauge, so the two stay in sync.
 - New `.tidewall` package format (a folder with a `wallpaper.json` manifest) for importing such sets.

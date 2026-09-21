@@ -79,6 +79,8 @@
 	<string>15.0</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Tidewall listens to the sound your Mac plays so audio-reactive wallpapers can move with it. The audio is analyzed as it plays and is never recorded or stored.</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>Copyright © 2026 Dominic Acosta. Licensed under the GNU GPL v3.</string>
 	<key>NSPrincipalClass</key>

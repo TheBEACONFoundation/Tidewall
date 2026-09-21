@@ -121,6 +121,8 @@ final class WallpaperPlayerView: NSView {
 final class DesktopWindow: NSWindow {
     let displayID: String
     let playerView = WallpaperPlayerView()
+    /// Set while the window shows a live (audio-reactive) wallpaper instead of video.
+    private(set) var visualizer: VisualizerView?
     private(set) var wallpaperID: UUID?
 
     init(screen: NSScreen, displayID: String) {
@@ -150,6 +152,10 @@ final class DesktopWindow: NSWindow {
     /// Shows `wallpaper`. When it's already showing, the current player is
     /// kept: the engine swaps players itself once a replacement is ready.
     func show(_ wallpaper: Wallpaper, player: LoopingPlayer) {
+        if visualizer != nil {
+            removeVisualizer()
+            contentView = playerView
+        }
         if wallpaperID != wallpaper.id || playerView.player == nil {
             playerView.player = player.player
         }
@@ -158,7 +164,27 @@ final class DesktopWindow: NSWindow {
         if !isVisible { orderFrontRegardless() }
     }
 
+    /// Shows a live wallpaper drawn in real time.
+    func showVisualizer(_ wallpaper: Wallpaper) {
+        guard let settings = wallpaper.visualizer else { return }
+        wallpaperID = wallpaper.id
+        if visualizer == nil, let view = VisualizerView(frame: playerView.frame, settings: settings) {
+            playerView.player = nil
+            view.isPaused = true // the engine starts it once it knows it's visible
+            visualizer = view
+            contentView = view
+        }
+        visualizer?.settings = settings
+        if !isVisible { orderFrontRegardless() }
+    }
+
+    private func removeVisualizer() {
+        visualizer?.isPaused = true
+        visualizer = nil
+    }
+
     func tearDown() {
+        removeVisualizer()
         playerView.player = nil
         wallpaperID = nil
         orderOut(nil)

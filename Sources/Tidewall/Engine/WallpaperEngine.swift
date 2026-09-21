@@ -142,12 +142,14 @@ final class WallpaperEngine {
                   let wallpaper = store.wallpaper(id: assignments.wallpaperID(for: display.id))
             else { continue }
 
-            let player = player(for: wallpaper)
-            neededPlayers.insert(wallpaper.id)
-
             let window = windows[display.id] ?? makeWindow(for: screen, displayID: display.id)
             if window.frame != screen.frame { window.setFrame(screen.frame, display: true) }
-            window.show(wallpaper, player: player)
+            if wallpaper.isLive {
+                window.showVisualizer(wallpaper)
+            } else {
+                window.show(wallpaper, player: player(for: wallpaper))
+                neededPlayers.insert(wallpaper.id)
+            }
             liveWindows[display.id] = window
         }
 
@@ -318,7 +320,11 @@ final class WallpaperEngine {
     }
 
     private func wallpaperDidChange(_ id: UUID) {
-        refresh(id)
+        if let wallpaper = store.wallpaper(id: id), wallpaper.isLive {
+            for window in windows.values where window.wallpaperID == id { window.showVisualizer(wallpaper) }
+        } else {
+            refresh(id)
+        }
         syncSystemWallpaper()
     }
 
@@ -350,7 +356,23 @@ final class WallpaperEngine {
             }
             player.setPlaying(shouldPlay)
         }
-        let hidden = !players.isEmpty && hiddenCount == players.count
+
+        // Live wallpapers draw (and listen) only while their window can be seen.
+        var visualizers = 0, drawing = 0
+        for window in windows.values where window.visualizer != nil {
+            visualizers += 1
+            var active = reason == nil
+            if active && pauseWhenHidden {
+                active = window.occlusionState.contains(.visible) && !coveredDisplays.contains(window.displayID)
+                if !active { hiddenCount += 1 }
+            }
+            window.visualizer?.isPaused = !active
+            if active { drawing += 1 }
+        }
+        AudioReactor.shared.setDemand(drawing, from: "desktop")
+
+        let total = players.count + visualizers
+        let hidden = total > 0 && hiddenCount == total
         if isPausedWhileHidden != hidden { isPausedWhileHidden = hidden }
     }
 

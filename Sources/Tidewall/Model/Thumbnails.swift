@@ -41,6 +41,7 @@ final class ThumbnailCache {
     private var rawFrames: [String: CGImage] = [:]
 
     static func cacheKey(for wallpaper: Wallpaper) -> String {
+        if let visualizer = wallpaper.visualizer { return "live|\(visualizer.hashValue)" }
         let file = LibraryStore.shared.currentMediaFile(for: wallpaper)
         return "\(file)|\(thumbnailTime(for: wallpaper))|\(wallpaper.settings.adjustments.hashValue)"
     }
@@ -59,6 +60,14 @@ final class ThumbnailCache {
     func image(for wallpaper: Wallpaper) async -> NSImage? {
         let key = Self.cacheKey(for: wallpaper)
         if let cached = rendered.object(forKey: key as NSString) { return cached }
+
+        if let visualizer = wallpaper.visualizer {
+            guard let frame = VisualizerRenderer.shared?.snapshot(settings: visualizer, size: CGSize(width: 640, height: 400))
+            else { return nil }
+            let image = NSImage(cgImage: frame, size: CGSize(width: frame.width, height: frame.height))
+            rendered.setObject(image, forKey: key as NSString)
+            return image
+        }
 
         let time = Self.thumbnailTime(for: wallpaper)
         let rawKey = "\(LibraryStore.shared.currentMediaFile(for: wallpaper))|\(time)"
@@ -118,16 +127,23 @@ final class SystemWallpaperSync {
 
     private func render(_ wallpaper: Wallpaper, on display: Display) async {
         let store = LibraryStore.shared
-        let url = store.mediaURL(for: wallpaper)
-        guard let frame = await FrameGrabber.frame(of: url, at: wallpaper.loopRange.lowerBound,
-                                                   maxSize: .zero, tolerance: 0) else { return }
-        let settings = wallpaper.settings
         let pixelSize = display.pixelSize
-        let data: Data? = await Task.detached(priority: .utility) {
-            guard let image = FramePipeline.renderScreen(frame: frame, pixelSize: pixelSize, settings: settings)
-            else { return nil }
-            return NSBitmapImageRep(cgImage: image).representation(using: .jpeg, properties: [.compressionFactor: 0.92])
-        }.value
+        let data: Data?
+        if let visualizer = wallpaper.visualizer {
+            // A live wallpaper's still is a representative moment of music.
+            data = VisualizerRenderer.shared?.snapshot(settings: visualizer, size: pixelSize)
+                .flatMap { NSBitmapImageRep(cgImage: $0).representation(using: .jpeg, properties: [.compressionFactor: 0.92]) }
+        } else {
+            let url = store.mediaURL(for: wallpaper)
+            guard let frame = await FrameGrabber.frame(of: url, at: wallpaper.loopRange.lowerBound,
+                                                       maxSize: .zero, tolerance: 0) else { return }
+            let settings = wallpaper.settings
+            data = await Task.detached(priority: .utility) {
+                guard let image = FramePipeline.renderScreen(frame: frame, pixelSize: pixelSize, settings: settings)
+                else { return nil }
+                return NSBitmapImageRep(cgImage: image).representation(using: .jpeg, properties: [.compressionFactor: 0.92])
+            }.value
+        }
         guard let data, let screen = display.screen else { return }
 
         // macOS caches desktop pictures by URL, so every still needs a new name.

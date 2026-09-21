@@ -24,6 +24,7 @@ Tidewall is a native SwiftUI + AppKit app in the spirit of Wallpaper Engine. Imp
 ## Features
 
 - **Built-in wallpapers**:
+  - **Pulse**: a live audio visualizer that moves with whatever your Mac is playing.
   - **Cool Chicken**: a chicken in shades struts through a synthwave sunset, in 4K60.
   - **Aurora**: drifting color fields.
 
@@ -94,6 +95,21 @@ Scripts/package.sh
 ```
 
 Pushing a tag like `v1.1.0` runs the [Release workflow](.github/workflows/release.yml), which tests, packages and publishes a GitHub Release. If the signing secrets listed at the top of that workflow are configured, it signs and notarizes too.
+
+## Audio-reactive wallpapers
+
+**Pulse** is drawn live on the GPU rather than played from a video, and it moves with the sound your Mac plays: music, videos, games.
+- **The scene:** a mirrored ring spectrum (lows at the bottom, highs at the top), a core driven by the bass, a shockwave on every beat, particles that speed up with loudness, and a nebula the bass pushes outward.
+- **Options:** pick colors, sensitivity, motion and quality in its editor.
+
+**How it hears:** Tidewall uses a Core Audio process tap (macOS 14.2 and later) to read a mono mix of every app's output. The audio is analyzed in memory as it plays and is never recorded or stored. macOS asks once for **System Audio Recording** permission. You can change it later under **System Settings → Privacy & Security → Screen & System Audio Recording**.
+
+**How much it costs:**
+- **Listening:** it only listens while Pulse is on screen and another app is actually playing sound, and stops about 6 seconds after the sound stops.
+- **Drawing:** it draws at 60 fps while there's sound and 20 fps while idle, and stops when the desktop is covered.
+- **Resolution:** at the default Balanced quality it draws at half resolution. That's 0.5 ms of GPU time per frame on an M5 Max, and about 1.6% CPU while idle.
+
+**How it analyzes:** it runs a 2048-point FFT with Accelerate, maps it to 48 log-spaced bands, and applies adaptive gain so quiet and loud audio both move the picture. A beat is detected when bass energy jumps well above its recent average.
 
 ## Wallpaper packages
 

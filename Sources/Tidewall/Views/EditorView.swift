@@ -6,8 +6,13 @@ struct WallpaperEditorView: View {
 
     var body: some View {
         if let binding = store.binding(for: wallpaperID) {
-            EditorContent(wallpaper: binding)
-                .id(wallpaperID)
+            if binding.wrappedValue.isLive {
+                LiveEditorContent(wallpaper: binding)
+                    .id(wallpaperID)
+            } else {
+                EditorContent(wallpaper: binding)
+                    .id(wallpaperID)
+            }
         } else {
             ContentUnavailableView("Wallpaper Not Found", systemImage: "questionmark.square.dashed",
                                    description: Text("It may have been deleted."))

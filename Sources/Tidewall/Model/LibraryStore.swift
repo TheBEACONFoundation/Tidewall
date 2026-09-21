@@ -82,7 +82,7 @@ final class LibraryStore {
         do {
             let decoded = try Self.decodeLibrary(data)
             // Drop entries whose media went missing (e.g. deleted in Finder).
-            wallpapers = decoded.filter { fm.fileExists(atPath: mediaURL(for: $0).path) }
+            wallpapers = decoded.filter { $0.isLive || fm.fileExists(atPath: mediaURL(for: $0).path) }
         } catch {
             // Set the unreadable file aside rather than letting the next save
             // overwrite it, so the library can still be recovered by hand.
@@ -322,7 +322,7 @@ final class LibraryStore {
         let defaults = UserDefaults.standard
         var installed = Set(defaults.stringArray(forKey: key) ?? [])
         if defaults.bool(forKey: "didInstallSample") { installed.insert("Aurora") } // set by 1.0
-        let missing = BuiltInWallpaper.all.filter { !installed.contains($0.id) && $0.url != nil }
+        let missing = BuiltInWallpaper.all.filter { !installed.contains($0.id) && $0.isAvailable }
         guard !missing.isEmpty else { return }
         defaults.set(Array(installed.union(missing.map(\.id))).sorted(), forKey: key)
         for builtIn in missing {
@@ -331,6 +331,15 @@ final class LibraryStore {
     }
 
     func addBuiltIn(_ builtIn: BuiltInWallpaper) async {
+        if builtIn.isVisualizer {
+            let wallpaper = Wallpaper(
+                id: UUID(), name: builtIn.name, mediaFile: "", originalFileName: "Built in",
+                dateAdded: .now, duration: 0, pixelWidth: 0, pixelHeight: 0,
+                settings: WallpaperSettings(), visualizer: VisualizerSettings())
+            wallpapers.insert(wallpaper, at: 0)
+            structureChanged()
+            return
+        }
         guard let url = builtIn.url else { return }
         await importFiles([url], names: [url: builtIn.name])
     }

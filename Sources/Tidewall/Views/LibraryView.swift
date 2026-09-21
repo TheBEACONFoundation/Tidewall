@@ -222,8 +222,10 @@ struct LibraryGridView: View {
         Button("Duplicate") {
             if let copy = store.duplicate(wallpaper.id) { navigation.selection = copy.id }
         }
-        Button("Show in Finder") {
-            NSWorkspace.shared.activateFileViewerSelecting([store.mediaURL(for: wallpaper)])
+        if !wallpaper.isLive {
+            Button("Show in Finder") {
+                NSWorkspace.shared.activateFileViewerSelecting([store.mediaURL(for: wallpaper)])
+            }
         }
         Divider()
         Button("Delete…", role: .destructive) { pendingDeletion = wallpaper }
@@ -293,6 +295,7 @@ private struct WallpaperCard: View {
     }
 
     private var detailText: String {
+        if wallpaper.isLive { return "Live · reacts to audio" }
         let range = wallpaper.loopRange
         let length = range.upperBound - range.lowerBound
         let trimmed = length < wallpaper.duration - 0.05 ? "Trimmed · " : ""

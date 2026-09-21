@@ -7,7 +7,7 @@ import Testing
 struct BuiltInTests {
     let resources = sampleMovie.deletingLastPathComponent()
 
-    @Test(arguments: BuiltInWallpaper.all)
+    @Test(arguments: BuiltInWallpaper.all.filter { !$0.isVisualizer })
     func everyBuiltInShipsAPlayableVideo(_ builtIn: BuiltInWallpaper) async throws {
         let url = resources.appendingPathComponent("\(builtIn.id).mov")
         #expect(FileManager.default.fileExists(atPath: url.path), "Resources/\(builtIn.id).mov is missing")

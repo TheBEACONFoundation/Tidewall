@@ -16,6 +16,7 @@ You need Xcode 26 or later, since the standalone Command Line Tools lack SwiftUI
 
 - **Match the surrounding code.** The engine is AppKit and AVFoundation, the UI is SwiftUI with `@Observable` models, and everything touching UI or players is `@MainActor`.
 - **Mind the battery.** Wallpapers run all day. Avoid per-frame work: filters run live only while a look is being edited, and are otherwise baked into a playback copy. Anything that polls needs a very good reason.
+- **Debugging audio:** `defaults write io.github.thebeaconfoundation.Tidewall debugAudio -bool true` logs the visualizer's analysis (whether it's listening, plus level, bass, mid, treble and beats) once a second to Console.
 - **Testing battery variants** doesn't need a drained battery. `defaults write io.github.thebeaconfoundation.Tidewall debugBatteryState low` forces a state (`full`, `normal`, `low`, `critical` or `empty`), and Tidewall picks it up within 20 seconds. Delete the key to go back to the real battery.
 - **Measure performance changes.** Quit Tidewall, then compare before and after with `Scripts/benchmark.sh`. It plays scenarios in a real desktop window and reports GPU use plus the CPU used by Tidewall, WindowServer, the video decoder and coreaudiod. For example:
 

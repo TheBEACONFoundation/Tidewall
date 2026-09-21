@@ -19,8 +19,13 @@ struct Wallpaper: Codable, Identifiable, Hashable {
     /// Optional per-battery-state videos (``BatteryState`` raw value → media
     /// file). `mediaFile` is the fallback, e.g. on Macs without a battery.
     var batteryVariants: [String: String]? = nil
+    /// Set for live wallpapers drawn in real time (the audio visualizer);
+    /// those have no video file.
+    var visualizer: VisualizerSettings? = nil
 
     var videoSize: CGSize { CGSize(width: pixelWidth, height: pixelHeight) }
+
+    var isLive: Bool { visualizer != nil }
 
     var isBatteryReactive: Bool { !(batteryVariants?.isEmpty ?? true) }
 
@@ -31,7 +36,7 @@ struct Wallpaper: Codable, Identifiable, Hashable {
 
     /// Every media file this wallpaper uses.
     var allMediaFiles: Set<String> {
-        Set([mediaFile] + (batteryVariants.map { Array($0.values) } ?? []))
+        Set(([mediaFile] + (batteryVariants.map { Array($0.values) } ?? [])).filter { !$0.isEmpty })
     }
 
     /// The portion of the source that loops, in seconds.
@@ -72,17 +77,21 @@ enum BatteryState: String, Codable, CaseIterable, Identifiable {
     }
 }
 
-/// Wallpapers that ship inside the app bundle (Resources/<id>.mov).
+/// Wallpapers that ship inside the app: videos (Resources/<id>.mov) and
+/// live ones drawn in real time.
 struct BuiltInWallpaper: Identifiable, Hashable {
     let id: String
     let name: String
+    var isVisualizer = false
 
     static let all = [
+        BuiltInWallpaper(id: "Pulse", name: "Pulse", isVisualizer: true),
         BuiltInWallpaper(id: "CoolChicken", name: "Cool Chicken"),
         BuiltInWallpaper(id: "Aurora", name: "Aurora"),
     ]
 
-    var url: URL? { Bundle.main.url(forResource: id, withExtension: "mov") }
+    var url: URL? { isVisualizer ? nil : Bundle.main.url(forResource: id, withExtension: "mov") }
+    var isAvailable: Bool { isVisualizer || url != nil }
 }
 
 enum Scaling: String, Codable, CaseIterable, Identifiable {
