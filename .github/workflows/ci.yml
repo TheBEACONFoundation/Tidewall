@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Test
+        run: swift test
+
+      - name: Build universal app
+        run: Scripts/build-app.sh release
+
+      - name: Verify bundle
+        run: |
+          lipo -archs build/Tidewall.app/Contents/MacOS/Tidewall
+          codesign --verify --strict build/Tidewall.app
+          plutil -lint build/Tidewall.app/Contents/Info.plist
