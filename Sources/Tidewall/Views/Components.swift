@@ -7,6 +7,14 @@ struct WallpaperThumbnail: View {
     @State private var image: NSImage?
 
     var body: some View {
+        if wallpaper.isPlaylist {
+            PlaylistThumbnail(wallpaper: wallpaper)
+        } else {
+            still
+        }
+    }
+
+    private var still: some View {
         Rectangle()
             .fill(.quaternary)
             .overlay {

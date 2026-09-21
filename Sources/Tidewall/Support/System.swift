@@ -94,6 +94,7 @@ enum Preferences {
     static let pauseWhenHidden = "pauseWhenHidden"
     static let pauseInLowPowerMode = "pauseInLowPowerMode"
     static let pauseOnBattery = "pauseOnBattery"
+    static let pauseForReduceMotion = "pauseForReduceMotion"
     static let matchSystemWallpaper = "matchSystemWallpaper"
     static let showDockIcon = "showDockIcon"
 
@@ -103,6 +104,7 @@ enum Preferences {
             pauseWhenHidden: true,
             pauseInLowPowerMode: true,
             pauseOnBattery: false,
+            pauseForReduceMotion: true,
             matchSystemWallpaper: false,
             showDockIcon: true,
         ])

@@ -1,3 +1,4 @@
+import ImageIO
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -8,6 +9,7 @@ extension BlockCategory {
         case .light: Color(red: 1.00, green: 0.62, blue: 0.20)
         case .motion: Color(red: 0.62, green: 0.40, blue: 1.00)
         case .music: Color(red: 0.20, green: 0.80, blue: 0.50)
+        case .content: Color(red: 0.95, green: 0.35, blue: 0.45)
         case .finish: Color(red: 0.55, green: 0.58, blue: 0.64)
         }
     }
@@ -173,8 +175,8 @@ struct BlocksEditorContent: View {
     private func add(_ kind: BlockKind) {
         let block = kind.makeBlock()
         var blocks = composition.wrappedValue.blocks
-        // A new background goes to the bottom of the stack, anything else on top.
-        if kind == .gradient {
+        // A new background (or picture) goes to the bottom of the stack, anything else on top.
+        if kind == .gradient || kind == .image {
             blocks.insert(block, at: 0)
         } else if let vignette = blocks.lastIndex(where: { $0.kind == .vignette }), kind != .vignette {
             blocks.insert(block, at: vignette)
@@ -207,6 +209,8 @@ private struct BlockCard: View {
     var onToggleExpand: () -> Void
     var onDuplicate: () -> Void
     var onDelete: () -> Void
+    @State private var pictureError: String?
+    @State private var pictureThumbnail: NSImage?
 
     private var tint: Color { block.kind.category.color }
 
@@ -261,7 +265,7 @@ private struct BlockCard: View {
                 colorDot(block.colorA)
                 if block.kind.usesSecondColor { colorDot(block.colorB) }
             }
-            .opacity(block.kind == .vignette ? 0 : 1)
+            .opacity(block.kind == .vignette || block.kind == .image ? 0 : 1)
             Toggle("On", isOn: $block.enabled)
                 .toggleStyle(.switch)
                 .controlSize(.mini)
@@ -282,6 +286,61 @@ private struct BlockCard: View {
         .accessibilityHint(isExpanded ? "Collapses the block's settings" : "Shows the block's settings")
     }
 
+    @ViewBuilder
+    private var pictureSettings: some View {
+        HStack(spacing: 10) {
+            Group {
+                if let preview = pictureThumbnail {
+                    Image(nsImage: preview).resizable().aspectRatio(contentMode: .fill)
+                } else {
+                    Rectangle().fill(.quaternary).overlay { Image(systemName: "photo").foregroundStyle(.secondary) }
+                }
+            }
+            .frame(width: 64, height: 40)
+            .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+            .task(id: block.media) { pictureThumbnail = await Self.thumbnail(of: block.media) }
+            Button(block.media == nil ? "Choose Picture…" : "Change Picture…", action: choosePicture)
+            Spacer()
+        }
+        if let pictureError {
+            Text(pictureError).font(.caption).foregroundStyle(.red)
+        }
+        Picker("Layout", selection: Binding(get: { Int(block.detail.rounded()) }, set: { block.detail = Double($0) })) {
+            ForEach(BlockKind.imageLayouts.indices, id: \.self) { Text(BlockKind.imageLayouts[$0]).tag($0) }
+        }
+        .pickerStyle(.segmented)
+    }
+
+    /// A small copy of the block's picture, made off the main thread.
+    private static func thumbnail(of file: String?) async -> NSImage? {
+        guard let file else { return nil }
+        let url = LibraryStore.shared.mediaDirectory.appendingPathComponent(file)
+        return await Task.detached(priority: .userInitiated) { () -> NSImage? in
+            guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+                  let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                      kCGImageSourceCreateThumbnailFromImageAlways: true,
+                      kCGImageSourceCreateThumbnailWithTransform: true,
+                      kCGImageSourceThumbnailMaxPixelSize: 160,
+                  ] as CFDictionary)
+            else { return nil }
+            return NSImage(cgImage: image, size: CGSize(width: image.width, height: image.height))
+        }.value
+    }
+
+    private func choosePicture() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose a Picture"
+        panel.allowedContentTypes = [.image]
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            block.media = try LibraryStore.shared.importPicture(from: url)
+            pictureError = nil
+        } catch {
+            pictureError = error.localizedDescription
+        }
+    }
+
     private func colorDot(_ color: RGBAColor) -> some View {
         Circle().fill(color.color).frame(width: 12, height: 12)
             .overlay(Circle().strokeBorder(Color.primary.opacity(0.2)))
@@ -290,7 +349,24 @@ private struct BlockCard: View {
     @ViewBuilder
     private var settings: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if block.kind != .vignette {
+            if block.kind == .image {
+                pictureSettings
+            }
+            if block.kind == .text {
+                TextField("Text", text: $block.text, prompt: Text("Your words"), axis: .vertical)
+                    .lineLimit(1...4)
+            }
+            if block.kind == .clock {
+                Picker("Show", selection: Binding(get: { Int(block.detail.rounded()) }, set: { block.detail = Double($0) })) {
+                    ForEach(BlockKind.clockFormats.indices, id: \.self) { Text(BlockKind.clockFormats[$0]).tag($0) }
+                }
+            }
+            if block.kind.isType {
+                Picker("Font", selection: $block.font) {
+                    ForEach(BlockFont.allCases) { Text($0.title).tag($0) }
+                }
+            }
+            if block.kind != .vignette && block.kind != .image {
                 HStack(spacing: 16) {
                     ColorPicker(block.kind.usesSecondColor ? "Colors" : "Color",
                                 selection: $block.colorA.swiftUIColor, supportsOpacity: false)
@@ -308,12 +384,12 @@ private struct BlockCard: View {
                 }
             }
 
-            ForEach(block.kind.controls) { control in
+            ForEach(block.kind.controls(for: block)) { control in
                 SliderRow(title: control.title, value: $block[dynamicMember: control.key], range: control.range,
                           defaultValue: block.kind.makeBlock()[keyPath: control.key], format: control.text)
             }
 
-            if block.kind.usesPosition {
+            if block.kind.showsPosition(for: block) {
                 SliderRow(title: "Left – Right", value: $block.x, range: 0...1, defaultValue: 0.5,
                           format: { String(format: "%.0f%%", $0 * 100) })
                 SliderRow(title: "Down – Up", value: $block.y, range: 0...1, defaultValue: block.kind.makeBlock().y,

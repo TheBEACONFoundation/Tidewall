@@ -85,5 +85,11 @@
 	<string>Copyright © 2026 Dominic Acosta. Licensed under the GNU GPL v3.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>SUFeedURL</key>
+	<string>https://github.com/TheBEACONFoundation/Tidewall/releases/latest/download/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>+d7AZ2JmioNnW1QYmA8gVVfQLzmnvsURZF6z03Pgv8E=</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
 </dict>
 </plist>

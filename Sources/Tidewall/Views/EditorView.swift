@@ -2,11 +2,16 @@ import SwiftUI
 
 struct WallpaperEditorView: View {
     let wallpaperID: UUID
+    @Environment(\.undoManager) private var undoManager
     private let store = LibraryStore.shared
 
     var body: some View {
-        if let binding = store.binding(for: wallpaperID) {
-            if binding.wrappedValue.composition != nil {
+        if let base = store.binding(for: wallpaperID) {
+            let binding = EditHistory.shared.tracking(base, undoManager: undoManager)
+            if binding.wrappedValue.isPlaylist {
+                PlaylistEditorContent(wallpaper: binding)
+                    .id(wallpaperID)
+            } else if binding.wrappedValue.composition != nil {
                 BlocksEditorContent(wallpaper: binding)
                     .id(wallpaperID)
             } else if binding.wrappedValue.isLive {

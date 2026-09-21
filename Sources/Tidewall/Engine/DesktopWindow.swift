@@ -87,6 +87,25 @@ final class WallpaperPlayerView: NSView {
         CATransaction.commit()
     }
 
+    private var firstFrameObservation: NSKeyValueObservation?
+
+    /// Calls `action` once the picture has a frame up, or after `timeout`
+    /// (so a video that fails to load can't hold anything up).
+    func whenReady(timeout: TimeInterval, _ action: @escaping () -> Void) {
+        var done = false
+        let finish = { [weak self] in
+            guard !done else { return }
+            done = true
+            self?.firstFrameObservation = nil
+            action()
+        }
+        firstFrameObservation = playerLayer.observe(\.isReadyForDisplay, options: [.initial, .new]) { layer, _ in
+            guard layer.isReadyForDisplay else { return }
+            DispatchQueue.main.async { finish() }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { finish() }
+    }
+
     private func cancelTransition() {
         readyObservation = nil
         incomingLayer?.player = nil
@@ -118,12 +137,25 @@ final class WallpaperPlayerView: NSView {
 
 /// A borderless, click-through window pinned to the desktop layer of one
 /// screen: above the system wallpaper, below desktop icons and every app.
+/// Switching to another wallpaper crossfades: the new picture goes in
+/// underneath, and the old one fades away once the new one is ready.
 final class DesktopWindow: NSWindow {
+    /// The longest a crossfade waits for the new picture's first frame.
+    static let readyTimeout: TimeInterval = 2
+
     let displayID: String
-    let playerView = WallpaperPlayerView()
-    /// Set while the window shows a live (audio-reactive) wallpaper instead of video.
-    private(set) var visualizer: VisualizerView?
+    private let container = NSView()
+    /// What's on screen: a video or a live wallpaper.
+    private var current: NSView?
+    /// The previous wallpaper, while it fades out.
+    private var outgoing: NSView?
+    private var transitionID = 0
     private(set) var wallpaperID: UUID?
+
+    /// Set while the window shows a video.
+    var playerView: WallpaperPlayerView? { current as? WallpaperPlayerView }
+    /// Set while the window shows a live wallpaper drawn in real time.
+    var visualizer: VisualizerView? { current as? VisualizerView }
 
     init(screen: NSScreen, displayID: String) {
         self.displayID = displayID
@@ -138,7 +170,9 @@ final class DesktopWindow: NSWindow {
         isReleasedWhenClosed = false
         isExcludedFromWindowsMenu = true
         animationBehavior = .none
-        contentView = playerView
+        container.wantsLayer = true
+        container.layer?.backgroundColor = NSColor.black.cgColor
+        contentView = container
         setAccessibilityElement(false)
         setFrame(screen.frame, display: false)
     }
@@ -151,41 +185,87 @@ final class DesktopWindow: NSWindow {
 
     /// Shows `wallpaper`. When it's already showing, the current player is
     /// kept: the engine swaps players itself once a replacement is ready.
-    func show(_ wallpaper: Wallpaper, player: LoopingPlayer) {
-        if visualizer != nil {
-            removeVisualizer()
-            contentView = playerView
-        }
-        if wallpaperID != wallpaper.id || playerView.player == nil {
-            playerView.player = player.player
+    func show(_ wallpaper: Wallpaper, player: LoopingPlayer, fade: TimeInterval = 0) {
+        if wallpaperID == wallpaper.id, let playerView {
+            if playerView.player == nil { playerView.player = player.player }
+            playerView.configure(with: wallpaper)
+        } else {
+            let view = WallpaperPlayerView(frame: container.bounds)
+            view.player = player.player
+            view.configure(with: wallpaper)
+            present(view, fade: fade) { done in view.whenReady(timeout: Self.readyTimeout, done) }
         }
         wallpaperID = wallpaper.id
-        playerView.configure(with: wallpaper)
         if !isVisible { orderFrontRegardless() }
     }
 
     /// Shows a live wallpaper drawn in real time.
-    func showVisualizer(_ wallpaper: Wallpaper) {
+    func showVisualizer(_ wallpaper: Wallpaper, fade: TimeInterval = 0) {
         guard let content = LiveContent(wallpaper) else { return }
-        wallpaperID = wallpaper.id
-        if visualizer == nil, let view = VisualizerView(frame: playerView.frame, content: content) {
-            playerView.player = nil
+        if wallpaperID == wallpaper.id, let visualizer {
+            if visualizer.content != content { visualizer.content = content }
+        } else if let view = VisualizerView(frame: container.bounds, content: content) {
             view.isPaused = true // the engine starts it once it knows it's visible
-            visualizer = view
-            contentView = view
+            present(view, fade: fade) { done in
+                // Draw a first frame so there's something to fade to.
+                view.draw()
+                done()
+            }
         }
-        if visualizer?.content != content { visualizer?.content = content }
+        wallpaperID = wallpaper.id
         if !isVisible { orderFrontRegardless() }
     }
 
-    private func removeVisualizer() {
-        visualizer?.isPaused = true
-        visualizer = nil
+    /// Puts `view` on screen, underneath the current picture, and fades the
+    /// current one away once `whenReady` says the new one has a frame.
+    private func present(_ view: NSView, fade: TimeInterval, whenReady: (@escaping () -> Void) -> Void) {
+        view.frame = container.bounds
+        view.autoresizingMask = [.width, .height]
+        if outgoing != nil {
+            // Already crossfading: the half-arrived picture gives way at once,
+            // and the one still fading out fades to the new one instead.
+            if let current { retire(current) }
+        } else {
+            outgoing = current
+        }
+        current = view
+        container.addSubview(view, positioned: .below, relativeTo: outgoing)
+        transitionID += 1
+
+        guard let leaving = outgoing else { return }
+        guard fade > 0, isVisible else {
+            retire(leaving)
+            outgoing = nil
+            return
+        }
+        let id = transitionID
+        whenReady { [weak self] in
+            guard let self, id == self.transitionID else { return }
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = fade
+                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                leaving.animator().alphaValue = 0
+            } completionHandler: { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self, id == self.transitionID, self.outgoing === leaving else { return }
+                    self.retire(leaving)
+                    self.outgoing = nil
+                }
+            }
+        }
+    }
+
+    private func retire(_ view: NSView) {
+        (view as? VisualizerView)?.isPaused = true
+        (view as? WallpaperPlayerView)?.player = nil
+        view.removeFromSuperview()
     }
 
     func tearDown() {
-        removeVisualizer()
-        playerView.player = nil
+        transitionID += 1
+        for view in [current, outgoing].compactMap({ $0 }) { retire(view) }
+        current = nil
+        outgoing = nil
         wallpaperID = nil
         orderOut(nil)
         close()

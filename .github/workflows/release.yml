@@ -9,6 +9,9 @@ name: Release
 #   MACOS_CERTIFICATE_PASSWORD  password for that .p12
 #   MACOS_SIGN_IDENTITY         e.g. "Developer ID Application: Jane Doe (TEAMID)"
 #   NOTARY_APPLE_ID, NOTARY_TEAM_ID, NOTARY_APP_PASSWORD  (app-specific password)
+#
+# For automatic updates, the update-signing key (see README, "Releasing"):
+#   SPARKLE_PRIVATE_KEY         from `generate_keys --account tidewall -x <file>`
 
 on:
   push:
@@ -29,13 +32,14 @@ jobs:
       NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
       NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
       NOTARY_APP_PASSWORD: ${{ secrets.NOTARY_APP_PASSWORD }}
+      SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - name: Test
-        run: swift test
+        run: swift test --disable-keychain
 
       - name: Import signing certificate
         if: env.MACOS_CERTIFICATE_P12 != ''

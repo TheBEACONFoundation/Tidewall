@@ -1,4 +1,5 @@
 import CoreGraphics
+import ImageIO
 import Foundation
 import Testing
 @testable import Tidewall
@@ -45,7 +46,7 @@ struct BlocksTests {
         #expect(BlockTemplate.party.composition.usesAudio)
     }
 
-    @Test(arguments: BlockKind.allCases.filter { $0 != .vignette && $0 != .gradient })
+    @Test(arguments: BlockKind.allCases.filter { $0 != .vignette && $0 != .gradient && $0 != .image })
     func everyKindDrawsSomething(_ kind: BlockKind) throws {
         let renderer = try #require(BlocksRenderer.shared, "Metal isn't available here")
         let image = try #require(renderer.snapshot(Composition(blocks: [kind.makeBlock()]), size: size))
@@ -129,5 +130,87 @@ struct BlocksTests {
         #expect(imported.name == "My Synthwave")
         #expect(imported.composition == mine.wallpaper(id: original.id)?.composition)
         #expect(imported.id != original.id)
+    }
+
+    /// A solid-colour picture file, for picture blocks.
+    private func writePicture(to url: URL, red: CGFloat, width: Int = 64, height: Int = 32) throws {
+        let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                            space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
+        ctx.setFillColor(CGColor(srgbRed: red, green: 0.1, blue: 0.1, alpha: 1))
+        ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        let destination = try #require(CGImageDestinationCreateWithURL(url as CFURL, "public.png" as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, ctx.makeImage()!, nil)
+        #expect(CGImageDestinationFinalize(destination))
+    }
+
+    @Test func clocksShowTheTimeButStayOffDesktopPictures() throws {
+        let renderer = try #require(BlocksRenderer.shared, "Metal isn't available here")
+        let clock = Composition(blocks: [BlockKind.clock.makeBlock()])
+        let live = try #require(renderer.snapshot(clock, size: size))
+        let still = try #require(renderer.snapshot(clock, size: size, date: nil))
+        #expect(brightness(live) > brightness(still) + 1, "the time is drawn")
+        #expect(brightness(still) < 0.5, "a desktop picture can't keep time, so it leaves the clock out")
+    }
+
+    @Test func typeGrowsWithItsSizeAndText() throws {
+        let renderer = try #require(BlocksRenderer.shared, "Metal isn't available here")
+        var block = BlockKind.text.makeBlock()
+        func slot(_ edit: (inout Block) -> Void) -> BlockTextureSlot? {
+            var b = block
+            edit(&b)
+            return renderer.textures.prepare(Composition(blocks: [b]), drawableHeight: 1000, date: .now).slots[b.id]
+        }
+        let small = try #require(slot { $0.size = 0.5 }), large = try #require(slot { $0.size = 1.5 })
+        #expect(large.height > small.height * 2.5)
+        let long = try #require(slot { $0.text = "Hello there, world" })
+        let short = try #require(slot { _ in })
+        #expect(long.aspect > short.aspect * 2)
+        block.text = "   "
+        #expect(slot { _ in } == nil, "blank text draws nothing")
+    }
+
+    @Test func picturesFillTheScreenAndTravelWithExports() async throws {
+        let renderer = try #require(BlocksRenderer.shared, "Metal isn't available here")
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("tidewall-tests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let mine = LibraryStore(rootURL: dir.appendingPathComponent("Mine"))
+        mine.load()
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let source = dir.appendingPathComponent("red.png")
+        try writePicture(to: source, red: 0.9)
+
+        var picture = BlockKind.image.makeBlock()
+        picture.media = try mine.importPicture(from: source)
+        #expect(picture.media?.hasPrefix(LibraryStore.picturePrefix) == true)
+        var wallpaper = mine.createBlocksWallpaper(from: .blank)
+        wallpaper.composition?.blocks.append(picture)
+        mine.update(wallpaper)
+        #expect(mine.wallpaper(id: wallpaper.id)?.allMediaFiles.contains(picture.media!) == true)
+
+        // Drawn filling the screen: the red covers the corners too.
+        let saved = renderer.textures.mediaDirectory
+        renderer.textures.mediaDirectory = mine.mediaDirectory
+        defer { renderer.textures.mediaDirectory = saved }
+        let image = try #require(renderer.snapshot(Composition(blocks: [picture]), size: size))
+        let px = pixels(image)
+        #expect(px[0] > 180 && px[1] < 80, "top-left corner is the picture's red")
+        #expect(px[px.count - 4] > 180, "so is the bottom-right")
+
+        // Exported and imported elsewhere, the picture comes along.
+        let package = dir.appendingPathComponent("Shared.tidewall")
+        try mine.exportPackage(mine.wallpaper(id: wallpaper.id)!, to: package)
+        let theirs = LibraryStore(rootURL: dir.appendingPathComponent("Theirs"))
+        theirs.load()
+        let imported = try #require(await theirs.importFiles([package]).first)
+        let file = try #require(imported.composition?.blocks.last?.media)
+        #expect(FileManager.default.fileExists(atPath: theirs.mediaDirectory.appendingPathComponent(file).path))
+
+        // Pictures no wallpaper uses any more are cleared out at the next launch.
+        let orphan = try mine.importPicture(from: source)
+        let reloaded = LibraryStore(rootURL: dir.appendingPathComponent("Mine"))
+        mine.saveNow()
+        reloaded.load()
+        #expect(!FileManager.default.fileExists(atPath: mine.mediaDirectory.appendingPathComponent(orphan).path))
+        #expect(FileManager.default.fileExists(atPath: mine.mediaDirectory.appendingPathComponent(picture.media!).path))
     }
 }

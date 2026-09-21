@@ -16,12 +16,20 @@ struct TidewallApp: App {
             SettingsView()
         }
         .commands {
+            CommandGroup(after: .appInfo) {
+                CheckForUpdatesCommand()
+            }
             CommandGroup(replacing: .newItem) {
                 Button("New Wallpaper from Blocks…") {
                     AppDelegate.shared.showLibrary(section: .wallpapers)
                     AppDelegate.shared.navigation.showingNewBlocks = true
                 }
                 .keyboardShortcut("n")
+                Button("New Playlist") {
+                    AppDelegate.shared.showLibrary(section: .wallpapers)
+                    AppDelegate.shared.navigation.edit(LibraryStore.shared.createPlaylist().id)
+                }
+                .keyboardShortcut("n", modifiers: [.command, .shift])
                 Button("Import Wallpapers…") { LibraryStore.shared.presentImportPanel() }
                     .keyboardShortcut("o")
                 BuiltInWallpaperMenu()
@@ -32,6 +40,7 @@ struct TidewallApp: App {
             }
             CommandMenu("Playback") {
                 PauseCommand()
+                NextWallpaperCommand()
             }
         }
     }
@@ -45,6 +54,32 @@ private struct PauseCommand: View {
             engine.isUserPaused.toggle()
         }
         .keyboardShortcut("p", modifiers: [.command, .option])
+    }
+}
+
+private struct CheckForUpdatesCommand: View {
+    private var updates = Updates.shared
+
+    var body: some View {
+        if updates.isAvailable {
+            Button("Check for Updates…") { updates.checkNow() }
+                .disabled(!updates.canCheck)
+        }
+    }
+}
+
+/// Moves on every playlist on screen.
+private struct NextWallpaperCommand: View {
+    private var engine = WallpaperEngine.shared
+
+    private var playlists: [UUID] {
+        Array(Set(engine.displays.compactMap { engine.wallpaperID(for: $0.id) }.filter(engine.canSkip)))
+    }
+
+    var body: some View {
+        Button("Next Wallpaper") { playlists.forEach(engine.skip) }
+            .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
+            .disabled(playlists.isEmpty)
     }
 }
 
@@ -93,6 +128,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let store = LibraryStore.shared
         store.load()
         WallpaperEngine.shared.start()
+        Updates.shared.start()
         Task { await store.installBuiltInsIfNeeded() }
 
         if !launchedAsLoginItem {

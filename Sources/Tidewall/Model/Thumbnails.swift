@@ -42,6 +42,7 @@ final class ThumbnailCache {
 
     static func cacheKey(for wallpaper: Wallpaper) -> String {
         if let content = LiveContent(wallpaper) { return "live|\(content.hashValue)" }
+        if wallpaper.isPlaylist { return "playlist|\(wallpaper.id)" }
         let file = LibraryStore.shared.currentMediaFile(for: wallpaper)
         return "\(file)|\(thumbnailTime(for: wallpaper))|\(wallpaper.settings.adjustments.hashValue)"
     }
@@ -58,6 +59,7 @@ final class ThumbnailCache {
     }
 
     func image(for wallpaper: Wallpaper) async -> NSImage? {
+        guard !wallpaper.isPlaylist else { return nil }
         let key = Self.cacheKey(for: wallpaper)
         if let cached = rendered.object(forKey: key as NSString) { return cached }
 
@@ -132,7 +134,7 @@ final class SystemWallpaperSync {
         let data: Data?
         if let content = LiveContent(wallpaper) {
             // A live wallpaper's still is a representative moment of it.
-            data = content.snapshot(size: pixelSize)
+            data = content.snapshot(size: pixelSize, forDesktopPicture: true)
                 .flatMap { NSBitmapImageRep(cgImage: $0).representation(using: .jpeg, properties: [.compressionFactor: 0.92]) }
         } else {
             let url = store.mediaURL(for: wallpaper)

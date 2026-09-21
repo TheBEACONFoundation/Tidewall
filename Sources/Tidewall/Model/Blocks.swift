@@ -43,13 +43,32 @@ enum ReactSource: String, Codable, CaseIterable, Identifiable {
 }
 
 enum BlockCategory: String, CaseIterable {
-    case background = "Backgrounds", light = "Light & Shapes", motion = "Motion", music = "Music", finish = "Finishing"
+    case background = "Backgrounds", light = "Light & Shapes", motion = "Motion", music = "Music",
+         content = "Clock, Text & Pictures", finish = "Finishing"
+}
+
+/// Type styles for clock and text blocks.
+enum BlockFont: String, Codable, CaseIterable, Identifiable {
+    case rounded, classic, light, bold, mono
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .rounded: "Rounded"
+        case .classic: "Classic"
+        case .light: "Light"
+        case .bold: "Bold"
+        case .mono: "Mono"
+        }
+    }
 }
 
 /// The kinds of block. The raw value is what the shader switches on, so new
 /// kinds must be added at the end.
 enum BlockKind: Int, Codable, CaseIterable, Identifiable {
     case gradient, aurora, particles, waves, orb, rays, ripples, grid, spectrumRing, equalizer, vignette
+    case clock, text, image
 
     var id: Int { rawValue }
 
@@ -66,6 +85,9 @@ enum BlockKind: Int, Codable, CaseIterable, Identifiable {
         case .spectrumRing: "Spectrum Ring"
         case .equalizer: "Equalizer"
         case .vignette: "Vignette"
+        case .clock: "Clock"
+        case .text: "Text"
+        case .image: "Picture"
         }
     }
 
@@ -82,6 +104,9 @@ enum BlockKind: Int, Codable, CaseIterable, Identifiable {
         case .spectrumRing: "circle.dashed"
         case .equalizer: "chart.bar.fill"
         case .vignette: "camera.aperture"
+        case .clock: "clock.fill"
+        case .text: "textformat"
+        case .image: "photo.fill"
         }
     }
 
@@ -98,6 +123,9 @@ enum BlockKind: Int, Codable, CaseIterable, Identifiable {
         case .spectrumRing: "A ring of bars that dance to the music."
         case .equalizer: "Music bars along the bottom of the screen."
         case .vignette: "Darkens the edges to frame everything."
+        case .clock: "The time and date, always up to date."
+        case .text: "Your own words, with a soft glow."
+        case .image: "A photo or logo of your own."
         }
     }
 
@@ -107,9 +135,16 @@ enum BlockKind: Int, Codable, CaseIterable, Identifiable {
         case .orb, .rays, .ripples, .grid: .light
         case .particles, .waves: .motion
         case .spectrumRing, .equalizer: .music
+        case .clock, .text, .image: .content
         case .vignette: .finish
         }
     }
+
+    /// Clock and text blocks draw type.
+    var isType: Bool { self == .clock || self == .text }
+
+    /// Blocks that draw from a texture (type or a picture).
+    var usesTexture: Bool { isType || self == .image }
 
     /// Always driven by the music, whatever it reacts to.
     var isAudio: Bool { self == .spectrumRing || self == .equalizer }
@@ -123,9 +158,25 @@ enum BlockKind: Int, Codable, CaseIterable, Identifiable {
 
     var usesPosition: Bool {
         switch self {
-        case .orb, .rays, .ripples, .spectrumRing: true
+        case .orb, .rays, .ripples, .spectrumRing, .clock, .text, .image: true
         default: false
         }
+    }
+
+    /// Picture blocks either fill the screen or sit where they're put.
+    static let imageLayouts = ["Fill Screen", "Place Freely"]
+    /// What a clock block shows.
+    static let clockFormats = ["Time", "Time and Date", "Date"]
+
+    /// The sliders `block` shows: its kind's, minus any its layout doesn't use.
+    func controls(for block: Block) -> [BlockControl] {
+        guard self == .image else { return controls }
+        let placedFreely = block.detail >= 0.5
+        return controls.filter { placedFreely ? $0.title != "Motion" : $0.title != "Size" }
+    }
+
+    func showsPosition(for block: Block) -> Bool {
+        self == .image ? block.detail >= 0.5 : usesPosition
     }
 
     /// The sliders a block shows, in order, with labels that fit it.
@@ -157,6 +208,11 @@ enum BlockKind: Int, Codable, CaseIterable, Identifiable {
             return [brightness, BlockControl(\.count, "Bars", 8...64, format: .whole), BlockControl(\.size, "Height", 0.2...2)]
         case .vignette:
             return [BlockControl(\.amount, "Darkness", 0...1.5), BlockControl(\.size, "Size", 0.3...1.5)]
+        case .clock, .text:
+            return [BlockControl(\.size, "Size", 0.3...3), BlockControl(\.amount, "Glow", 0...2)]
+        case .image:
+            return [BlockControl(\.amount, "Brightness", 0.2...1.5), BlockControl(\.size, "Size", 0.2...2),
+                    BlockControl(\.speed, "Motion", 0...1)]
         }
     }
 
@@ -193,6 +249,12 @@ enum BlockKind: Int, Codable, CaseIterable, Identifiable {
             b.colorA = RGBAColor(r: 0.3, g: 1, b: 0.6); b.colorB = RGBAColor(r: 0.2, g: 0.6, b: 1); b.count = 32; b.size = 1
         case .vignette:
             b.amount = 0.8; b.size = 1
+        case .clock:
+            b.colorA = RGBAColor(r: 1, g: 1, b: 1); b.amount = 0.6; b.size = 1; b.detail = 1; b.x = 0.5; b.y = 0.6
+        case .text:
+            b.colorA = RGBAColor(r: 1, g: 1, b: 1); b.amount = 0.5; b.size = 0.8; b.text = "Hello"; b.x = 0.5; b.y = 0.5
+        case .image:
+            b.amount = 1; b.size = 1; b.speed = 0.3; b.detail = 0; b.x = 0.5; b.y = 0.5
         }
         return b
     }
@@ -240,6 +302,12 @@ struct Block: Codable, Hashable, Identifiable {
     var y = 0.5
     var react: ReactSource = .nothing
     var reactStrength = 1.0
+    /// Text blocks: what they say.
+    var text = ""
+    /// Clock and text blocks: the type style.
+    var font = BlockFont.rounded
+    /// Picture blocks: the image, a file in the library's Media folder.
+    var media: String?
 
     init(kind: BlockKind) { self.kind = kind }
 
@@ -261,6 +329,9 @@ struct Block: Codable, Hashable, Identifiable {
         y = try c.decode(.y, default: d.y)
         react = try c.decode(.react, default: d.react)
         reactStrength = try c.decode(.reactStrength, default: d.reactStrength)
+        text = try c.decode(.text, default: d.text)
+        font = try c.decode(.font, default: d.font)
+        media = try c.decodeIfPresent(String.self, forKey: .media)
     }
 }
 
@@ -270,7 +341,7 @@ extension RGBAColor {
 
 /// Ready-made starting points.
 enum BlockTemplate: String, CaseIterable, Identifiable {
-    case nightSky, synthwave, ocean, party, blank
+    case nightSky, synthwave, ocean, party, clock, blank
 
     var id: String { rawValue }
 
@@ -280,6 +351,7 @@ enum BlockTemplate: String, CaseIterable, Identifiable {
         case .synthwave: "Synthwave"
         case .ocean: "Ocean"
         case .party: "Music Party"
+        case .clock: "Desk Clock"
         case .blank: "Blank"
         }
     }
@@ -290,6 +362,7 @@ enum BlockTemplate: String, CaseIterable, Identifiable {
         case .synthwave: "Retro sun over a neon grid"
         case .ocean: "Waves with rising bubbles"
         case .party: "Everything dances to your music"
+        case .clock: "A big clock over a slow aurora"
         case .blank: "Just a gradient to build on"
         }
     }
@@ -333,6 +406,14 @@ enum BlockTemplate: String, CaseIterable, Identifiable {
                 block(.spectrumRing),
                 block(.orb) { $0.colorA = RGBAColor(r: 0.4, g: 0.8, b: 1); $0.amount = 0.55; $0.size = 0.3; $0.react = .bass },
                 block(.equalizer),
+                block(.vignette),
+            ])
+        case .clock:
+            return Composition(blocks: [
+                block(.gradient) { $0.colorA = RGBAColor(r: 0.04, g: 0.08, b: 0.14); $0.colorB = RGBAColor(r: 0.0, g: 0.01, b: 0.03) },
+                block(.aurora) { $0.amount = 0.6; $0.y = 0.7; $0.speed = 0.3 },
+                block(.particles) { $0.count = 0.4; $0.size = 0.5; $0.speed = 0.04; $0.detail = 2; $0.amount = 0.6 },
+                block(.clock) { $0.colorA = RGBAColor(r: 0.92, g: 0.97, b: 1); $0.size = 1.4; $0.y = 0.55 },
                 block(.vignette),
             ])
         case .blank:

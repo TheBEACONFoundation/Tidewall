@@ -24,7 +24,7 @@ jobs:
           swift --version
 
       - name: Test
-        run: swift test
+        run: swift test --disable-keychain
 
       - name: Build universal app
         run: Scripts/build-app.sh release

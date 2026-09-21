@@ -101,6 +101,17 @@ struct MenuBarView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
+            if engine.canSkip(currentID) {
+                Button {
+                    if let currentID { engine.skip(currentID) }
+                } label: {
+                    Label("Next Wallpaper", systemImage: "forward.fill")
+                        .labelStyle(.iconOnly)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("Show the playlist's next wallpaper")
+            }
             Button {
                 engine.isUserPaused.toggle()
             } label: {

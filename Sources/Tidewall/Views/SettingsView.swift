@@ -4,10 +4,10 @@ struct SettingsView: View {
     var body: some View {
         TabView {
             GeneralSettings()
-                .frame(width: 500, height: 430)
+                .frame(width: 500, height: 560)
                 .tabItem { Label("General", systemImage: "gearshape") }
             PerformanceSettings()
-                .frame(width: 500, height: 470)
+                .frame(width: 500, height: 520)
                 .tabItem { Label("Performance", systemImage: "gauge.with.dots.needle.33percent") }
         }
     }
@@ -60,6 +60,8 @@ private struct GeneralSettings: View {
                     .foregroundStyle(.secondary)
             }
 
+            UpdateSettings()
+
             Section {
                 LabeledContent("Library") {
                     Button("Show in Finder") {
@@ -72,11 +74,43 @@ private struct GeneralSettings: View {
     }
 }
 
+private struct UpdateSettings: View {
+    @Bindable private var updates = Updates.shared
+
+    var body: some View {
+        Section {
+            if updates.isAvailable {
+                Toggle("Check for updates automatically", isOn: $updates.automaticallyChecks)
+                Toggle("Download and install updates automatically", isOn: $updates.automaticallyInstalls)
+                    .disabled(!updates.automaticallyChecks)
+                LabeledContent("Last checked") {
+                    HStack {
+                        Text(updates.lastCheck.map { $0.formatted(date: .abbreviated, time: .shortened) } ?? "Never")
+                            .foregroundStyle(.secondary)
+                        Button("Check Now") { updates.checkNow() }
+                            .disabled(!updates.canCheck)
+                    }
+                }
+            } else {
+                Text("This build can't update itself. Builds from the Releases page on GitHub can.")
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("Updates")
+        } footer: {
+            Text("New versions come from Tidewall's releases on GitHub. Each download is checked against Tidewall's signature before it's installed.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
 private struct PerformanceSettings: View {
     @AppStorage(Preferences.optimizePlayback) private var optimizePlayback = true
     @AppStorage(Preferences.pauseWhenHidden) private var pauseWhenHidden = true
     @AppStorage(Preferences.pauseInLowPowerMode) private var pauseInLowPowerMode = true
     @AppStorage(Preferences.pauseOnBattery) private var pauseOnBattery = false
+    @AppStorage(Preferences.pauseForReduceMotion) private var pauseForReduceMotion = true
     @State private var copiesSize: Int64 = RenditionManager.shared.diskUsage
 
     var body: some View {
@@ -107,10 +141,11 @@ private struct PerformanceSettings: View {
                 Toggle("Pause when windows cover the desktop", isOn: $pauseWhenHidden)
                 Toggle("Pause in Low Power Mode", isOn: $pauseInLowPowerMode)
                 Toggle("Pause on battery power", isOn: $pauseOnBattery)
+                Toggle("Pause when Reduce Motion is on", isOn: $pauseForReduceMotion)
             } header: {
                 Text("Automatically pause")
             } footer: {
-                Text("A wallpaper pauses when full-screen apps or windows cover nearly all of its display. Playback always stops while the screen is locked, asleep or showing a screen saver.")
+                Text("A wallpaper pauses when full-screen apps or windows cover nearly all of its display. Playback always stops while the screen is locked, asleep or showing a screen saver. Reduce Motion is in System Settings → Accessibility → Display; while it's on, wallpapers hold still on their current frame.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

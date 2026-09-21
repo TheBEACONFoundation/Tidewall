@@ -24,10 +24,18 @@ struct Wallpaper: Codable, Identifiable, Hashable {
     var visualizer: VisualizerSettings? = nil
     /// Set for wallpapers made in the blocks editor.
     var composition: Composition? = nil
+    /// Set for playlists, which show other wallpapers in turn.
+    var playlist: Playlist? = nil
 
     var videoSize: CGSize { CGSize(width: pixelWidth, height: pixelHeight) }
 
+    /// Drawn in real time rather than played from a video.
     var isLive: Bool { visualizer != nil || composition != nil }
+
+    var isPlaylist: Bool { playlist != nil }
+
+    /// Played from a video file in the library.
+    var hasVideo: Bool { !isLive && !isPlaylist }
 
     var isBatteryReactive: Bool { !(batteryVariants?.isEmpty ?? true) }
 
@@ -38,7 +46,8 @@ struct Wallpaper: Codable, Identifiable, Hashable {
 
     /// Every media file this wallpaper uses.
     var allMediaFiles: Set<String> {
-        Set(([mediaFile] + (batteryVariants.map { Array($0.values) } ?? [])).filter { !$0.isEmpty })
+        let pictures = composition?.blocks.compactMap(\.media) ?? []
+        return Set(([mediaFile] + (batteryVariants.map { Array($0.values) } ?? []) + pictures).filter { !$0.isEmpty })
     }
 
     /// The portion of the source that loops, in seconds.

@@ -15,12 +15,13 @@ struct Assignments: Codable, Equatable {
 }
 
 enum PauseReason: Equatable {
-    case user, screenLocked, lowPowerMode, battery
+    case user, screenLocked, reduceMotion, lowPowerMode, battery
 
     var title: String {
         switch self {
         case .user: "Paused"
         case .screenLocked: "Paused while the screen is locked"
+        case .reduceMotion: "Paused because Reduce Motion is on"
         case .lowPowerMode: "Paused in Low Power Mode"
         case .battery: "Paused on battery power"
         }
@@ -48,6 +49,12 @@ final class WallpaperEngine {
     /// True while every live wallpaper is paused because windows hide it.
     private(set) var isPausedWhileHidden = false
 
+    /// The wallpaper each display actually shows: the assigned one, or for
+    /// a playlist, the wallpaper whose turn it is.
+    private(set) var shownWallpapers: [String: UUID] = [:]
+    /// Where each timer playlist has got to.
+    private(set) var playlistProgress: [UUID: PlaylistProgress] = [:]
+
     @ObservationIgnored private var windows: [String: DesktopWindow] = [:]
     @ObservationIgnored private var players: [UUID: LoopingPlayer] = [:]
     @ObservationIgnored private var sources: [UUID: PlaybackSource] = [:]
@@ -59,12 +66,17 @@ final class WallpaperEngine {
     @ObservationIgnored private var coveredDisplays: Set<String> = []
     @ObservationIgnored private var coverageTimer: Timer?
     @ObservationIgnored private var batteryTimer: Timer?
+    @ObservationIgnored private var playlistTimer: Timer?
     @ObservationIgnored private var occlusionObservers: [String: NSObjectProtocol] = [:]
     @ObservationIgnored private var defaultsChangePending = false
     @ObservationIgnored private var started = false
 
     private static let assignmentsKey = "assignments"
     private static let pausedKey = "userPaused"
+    private static let progressKey = "playlistProgress"
+    /// Crossfade when a playlist moves on, and when you pick another wallpaper.
+    static let playlistFade: TimeInterval = 2.5
+    static let switchFade: TimeInterval = 0.8
 
     private let store = LibraryStore.shared
     private let renditions = RenditionManager.shared
@@ -88,6 +100,15 @@ final class WallpaperEngine {
             assignments = decoded
         }
         isUserPaused = defaults.bool(forKey: Self.pausedKey)
+        if let json = defaults.string(forKey: Self.progressKey),
+           let decoded = try? JSONDecoder().decode([UUID: PlaylistProgress].self, from: Data(json.utf8)) {
+            playlistProgress = decoded
+        }
+    }
+
+    private func saveProgress() {
+        guard let data = try? JSONEncoder().encode(playlistProgress) else { return }
+        UserDefaults.standard.set(String(decoding: data, as: UTF8.self), forKey: Self.progressKey)
     }
 
     private func saveAssignments() {
@@ -107,8 +128,9 @@ final class WallpaperEngine {
         return ids.count == 1 ? ids.first ?? nil : nil
     }
 
+    /// Displays where `id` is on screen, directly or through a playlist.
     func displays(showing id: UUID) -> [Display] {
-        displays.filter { assignments.wallpaperID(for: $0.id) == id }
+        displays.filter { assignments.wallpaperID(for: $0.id) == id || shownWallpapers[$0.id] == id }
     }
 
     /// Sets the wallpaper for one display, or for all displays when
@@ -126,30 +148,42 @@ final class WallpaperEngine {
             assignments = Assignments(allDisplays: wallpaperID)
         }
         saveAssignments()
-        reconcile()
+        reconcile(fade: Self.switchFade)
     }
 
     // MARK: Reconciliation
 
-    /// Brings windows and players in line with the displays and assignments.
-    func reconcile() {
+    /// Brings windows and players in line with the displays, assignments and
+    /// playlists. A display that switches wallpaper crossfades over `fade`.
+    func reconcile(fade: TimeInterval = 0) {
         displays = Display.all
         pruneMissingWallpapers()
+
+        // What each display shows, first: players size themselves to it.
+        let now = Date.now
+        var shown: [String: UUID] = [:]
+        for display in displays {
+            guard let assigned = store.wallpaper(id: assignments.wallpaperID(for: display.id)) else { continue }
+            if assigned.isPlaylist, playlistProgress[assigned.id] == nil {
+                playlistProgress[assigned.id] = PlaylistProgress(anchor: now)
+                saveProgress()
+            }
+            if let wallpaper = resolve(assigned, at: now) { shown[display.id] = wallpaper.id }
+        }
+        if shownWallpapers != shown { shownWallpapers = shown }
 
         var liveWindows: [String: DesktopWindow] = [:]
         var neededPlayers: Set<UUID> = []
 
         for display in displays {
-            guard let screen = display.screen,
-                  let wallpaper = store.wallpaper(id: assignments.wallpaperID(for: display.id))
-            else { continue }
+            guard let screen = display.screen, let wallpaper = store.wallpaper(id: shown[display.id]) else { continue }
 
             let window = windows[display.id] ?? makeWindow(for: screen, displayID: display.id)
             if window.frame != screen.frame { window.setFrame(screen.frame, display: true) }
             if wallpaper.isLive {
-                window.showVisualizer(wallpaper)
+                window.showVisualizer(wallpaper, fade: fade)
             } else {
-                window.show(wallpaper, player: player(for: wallpaper))
+                window.show(wallpaper, player: player(for: wallpaper), fade: fade)
                 neededPlayers.insert(wallpaper.id)
             }
             liveWindows[display.id] = window
@@ -164,17 +198,104 @@ final class WallpaperEngine {
         windows = liveWindows
 
         for (id, player) in players where !neededPlayers.contains(id) {
-            player.invalidate()
+            retire(player, after: fade)
             players[id] = nil
             sources[id] = nil
             swaps.removeValue(forKey: id)?.cancel()
-            if let shown = onScreen.removeValue(forKey: id), shown !== player { shown.invalidate() }
+            if let shown = onScreen.removeValue(forKey: id), shown !== player { retire(shown, after: fade) }
         }
 
         updateCoverageMonitoring()
         updateBatteryMonitoring()
         updatePlayback()
         syncSystemWallpaper()
+        schedulePlaylistTimer(now: now)
+    }
+
+    /// Stops a player once the crossfade away from it is surely over.
+    private func retire(_ player: LoopingPlayer, after fade: TimeInterval) {
+        guard fade > 0 else {
+            player.invalidate()
+            return
+        }
+        Task {
+            try? await Task.sleep(for: .seconds(DesktopWindow.readyTimeout + fade + 0.5))
+            player.invalidate()
+        }
+    }
+
+    // MARK: Playlists
+
+    /// The wallpaper to put on screen for `wallpaper`: itself, or for a
+    /// playlist, the one whose turn it is.
+    private func resolve(_ wallpaper: Wallpaper, at date: Date) -> Wallpaper? {
+        guard wallpaper.isPlaylist else { return wallpaper }
+        return nowShowing(in: wallpaper, at: date).flatMap { store.wallpaper(id: $0.item.wallpaperID) }
+    }
+
+    /// Which of a playlist's wallpapers is up at `date`, and when the next
+    /// one takes over.
+    func nowShowing(in playlist: Wallpaper, at date: Date = .now) -> PlaylistSchedule.Showing? {
+        guard let list = playlist.playlist else { return nil }
+        return PlaylistSchedule.showing(list, items: store.playableItems(of: list), seed: playlist.id,
+                                        progress: playlistProgress[playlist.id] ?? PlaylistProgress(anchor: date), at: date)
+    }
+
+    /// Whether `playlistID` is a timer playlist with more than one wallpaper.
+    func canSkip(_ playlistID: UUID?) -> Bool {
+        guard let list = store.wallpaper(id: playlistID)?.playlist else { return false }
+        return list.mode == .interval && store.playableItems(of: list).count > 1
+    }
+
+    /// Moves a timer playlist on to its next wallpaper, which then gets a full turn.
+    func skip(_ playlistID: UUID) {
+        guard canSkip(playlistID), let list = store.wallpaper(id: playlistID)?.playlist else { return }
+        let now = Date.now
+        let progress = playlistProgress[playlistID] ?? PlaylistProgress(anchor: now)
+        let steps = max(0, Int(now.timeIntervalSince(progress.anchor) / max(60, list.interval)))
+        playlistProgress[playlistID] = PlaylistProgress(anchor: now, position: progress.position + steps + 1)
+        saveProgress()
+        reconcile(fade: Self.switchFade)
+    }
+
+    /// After an edit to a playlist, keeps its current wallpaper on screen if
+    /// it's still in the list, rather than jumping to whatever the new
+    /// order puts there.
+    private func playlistDidChange(_ playlist: Wallpaper) {
+        guard let list = playlist.playlist, list.mode == .interval,
+              let current = displays.lazy.filter({ self.assignments.wallpaperID(for: $0.id) == playlist.id })
+                .compactMap({ self.shownWallpapers[$0.id] }).first
+        else { return }
+        let items = store.playableItems(of: list)
+        guard let index = items.firstIndex(where: { $0.wallpaperID == current }),
+              nowShowing(in: playlist)?.index != index
+        else { return }
+        playlistProgress[playlist.id] = PlaylistSchedule.progress(showing: index, count: items.count,
+                                                                  shuffle: list.shuffle, seed: playlist.id, at: .now)
+        saveProgress()
+    }
+
+    /// Wakes up for the next playlist change on screen.
+    private func schedulePlaylistTimer(now: Date) {
+        playlistTimer?.invalidate()
+        playlistTimer = nil
+        let playlists = Set(displays.compactMap { assignments.wallpaperID(for: $0.id) })
+            .compactMap { store.wallpaper(id: $0) }
+            .filter(\.isPlaylist)
+        guard let next = playlists.compactMap({ nowShowing(in: $0, at: now)?.nextChange }).min() else { return }
+        let timer = Timer(fire: max(next, now).addingTimeInterval(0.05), interval: 0, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.reconcile(fade: Self.playlistFade) }
+        }
+        timer.tolerance = 0.5
+        RunLoop.main.add(timer, forMode: .common)
+        playlistTimer = timer
+    }
+
+    /// Timers stop while the Mac sleeps, and the clock can jump: catch up.
+    private func clockDidChange() {
+        guard displays.contains(where: { store.wallpaper(id: assignments.wallpaperID(for: $0.id))?.isPlaylist == true })
+        else { return }
+        reconcile(fade: Self.playlistFade)
     }
 
     // MARK: Battery variants
@@ -248,7 +369,7 @@ final class WallpaperEngine {
             guard let self, !Task.isCancelled, self.players[id] === replacement else { return }
             self.updatePlayback()
             for window in self.windows.values where window.wallpaperID == id {
-                window.playerView.transition(to: replacement.player, fade: fade)
+                window.playerView?.transition(to: replacement.player, fade: fade)
             }
             self.onScreen[id] = replacement
             self.swaps[id] = nil
@@ -266,7 +387,7 @@ final class WallpaperEngine {
     /// copy when one is ready, otherwise the original with live filters (and a
     /// copy scheduled in the background).
     private func playbackSource(for wallpaper: Wallpaper) -> PlaybackSource {
-        let screens = displays.filter { assignments.wallpaperID(for: $0.id) == wallpaper.id }.map(\.pixelSize)
+        let screens = displays.filter { shownWallpapers[$0.id] == wallpaper.id }.map(\.pixelSize)
         let requiredScale = FramePipeline.requiredScale(videoSize: wallpaper.videoSize, screenPixelSizes: screens,
                                                         settings: wallpaper.settings)
         let mediaFile = store.currentMediaFile(for: wallpaper)
@@ -299,7 +420,7 @@ final class WallpaperEngine {
         guard players[id] != nil, let wallpaper = store.wallpaper(id: id) else { return }
         _ = player(for: wallpaper)
         for window in windows.values where window.wallpaperID == id {
-            window.playerView.configure(with: wallpaper)
+            window.playerView?.configure(with: wallpaper)
         }
     }
 
@@ -322,9 +443,18 @@ final class WallpaperEngine {
             assignments = pruned
             saveAssignments()
         }
+        if playlistProgress.keys.contains(where: { !known.contains($0) }) {
+            playlistProgress = playlistProgress.filter { known.contains($0.key) }
+            saveProgress()
+        }
     }
 
     private func wallpaperDidChange(_ id: UUID) {
+        if let wallpaper = store.wallpaper(id: id), wallpaper.isPlaylist {
+            playlistDidChange(wallpaper)
+            reconcile(fade: Self.switchFade)
+            return
+        }
         if let wallpaper = store.wallpaper(id: id), wallpaper.isLive {
             for window in windows.values where window.wallpaperID == id { window.showVisualizer(wallpaper) }
             // An edit can start or stop the wallpaper's use of audio.
@@ -340,6 +470,8 @@ final class WallpaperEngine {
     private func currentPauseReason() -> PauseReason? {
         if isUserPaused { return .user }
         if !suspensions.isEmpty { return .screenLocked }
+        if Preferences.bool(Preferences.pauseForReduceMotion)
+            && NSWorkspace.shared.accessibilityDisplayShouldReduceMotion { return .reduceMotion }
         if Preferences.bool(Preferences.pauseInLowPowerMode) && PowerMonitor.isLowPowerModeEnabled { return .lowPowerMode }
         if Preferences.bool(Preferences.pauseOnBattery) && PowerMonitor.isOnBattery { return .battery }
         return nil
@@ -429,7 +561,7 @@ final class WallpaperEngine {
     private func syncSystemWallpaper() {
         guard Preferences.bool(Preferences.matchSystemWallpaper) else { return }
         for display in displays {
-            if let wallpaper = store.wallpaper(id: assignments.wallpaperID(for: display.id)) {
+            if let wallpaper = store.wallpaper(id: shownWallpapers[display.id]) {
                 SystemWallpaperSync.shared.sync(wallpaper, on: display)
             }
         }
@@ -482,7 +614,7 @@ final class WallpaperEngine {
                     self.wallpaperDidChange(id)
                 } else {
                     self.renditions.prune(keeping: Set(self.store.wallpapers.map(\.id)))
-                    self.reconcile()
+                    self.reconcile(fade: Self.switchFade)
                 }
             }
         }
@@ -491,6 +623,11 @@ final class WallpaperEngine {
             MainActor.assumeIsolated {
                 if let id { self?.refresh(id) }
             }
+        }
+        on(workspace, NSWorkspace.accessibilityDisplayOptionsDidChangeNotification) { $0.updatePlayback() }
+        on(workspace, NSWorkspace.didWakeNotification) { $0.clockDidChange() }
+        for name in [Notification.Name.NSSystemClockDidChange, .NSSystemTimeZoneDidChange, .NSCalendarDayChanged] {
+            on(center, name) { $0.clockDidChange() }
         }
         for name in [NSWorkspace.didActivateApplicationNotification, NSWorkspace.activeSpaceDidChangeNotification,
                      NSWorkspace.didHideApplicationNotification, NSWorkspace.didUnhideApplicationNotification] {

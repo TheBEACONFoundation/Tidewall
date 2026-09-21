@@ -142,6 +142,7 @@ struct LibraryGridView: View {
             ToolbarItem(placement: .primaryAction) {
                 Menu {
                     Button("New from Blocks…") { navigation.showingNewBlocks = true }
+                    Button("New Playlist") { newPlaylist() }
                     Button("Import Videos or GIFs…") { store.presentImportPanel() }
                     Divider()
                     Section("Built-in Wallpapers") {
@@ -193,6 +194,12 @@ struct LibraryGridView: View {
         }
     }
 
+    /// A new playlist, starting with the selected wallpaper if there is one.
+    private func newPlaylist() {
+        let selected = store.wallpaper(id: navigation.selection).map { [$0.id] } ?? []
+        navigation.edit(store.createPlaylist(with: selected).id)
+    }
+
     private var subtitle: String {
         let count = store.wallpapers.count
         return count == 1 ? "1 wallpaper" : "\(count) wallpapers"
@@ -227,10 +234,16 @@ struct LibraryGridView: View {
         }
         Divider()
         Button("Edit") { navigation.edit(wallpaper.id) }
+        if !wallpaper.isPlaylist {
+            Button("New Playlist with This Wallpaper") { navigation.edit(store.createPlaylist(with: [wallpaper.id]).id) }
+        }
+        if engine.canSkip(wallpaper.id), !engine.displays(showing: wallpaper.id).isEmpty {
+            Button("Next Wallpaper") { engine.skip(wallpaper.id) }
+        }
         Button("Duplicate") {
             if let copy = store.duplicate(wallpaper.id) { navigation.selection = copy.id }
         }
-        if !wallpaper.isLive {
+        if wallpaper.hasVideo {
             Button("Show in Finder") {
                 NSWorkspace.shared.activateFileViewerSelecting([store.mediaURL(for: wallpaper)])
             }
@@ -306,6 +319,12 @@ private struct WallpaperCard: View {
     }
 
     private var detailText: String {
+        if let playlist = wallpaper.playlist {
+            let count = LibraryStore.shared.playableItems(of: playlist).count
+            let turns = playlist.mode == .timeOfDay ? "by time of day"
+                : "every \(playlist.intervalTitle)" + (playlist.shuffle ? ", shuffled" : "")
+            return "Playlist · \(count) wallpaper\(count == 1 ? "" : "s") · \(turns)"
+        }
         if let composition = wallpaper.composition {
             let count = composition.blocks.count
             return "Made with blocks · \(count) block\(count == 1 ? "" : "s")" + (composition.usesAudio ? " · reacts to audio" : "")

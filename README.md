@@ -37,7 +37,8 @@ Tidewall is a native SwiftUI + AppKit app in the spirit of Wallpaper Engine. Imp
   - Playback speed from 0.25× to 2×
   - Brightness, contrast, saturation, hue, blur, vignette and tint
   - Optional audio
-- **Live edits**: changes save automatically and update the desktop as you drag the sliders.
+- **Live edits**: changes save automatically and update the desktop as you drag the sliders. **Edit → Undo** (⌘Z) and **Redo** (⇧⌘Z) work in every editor; a whole slider drag or a typed name is one step.
+- **Playlists**: take turns between wallpapers on a timer (in order or shuffled), or give each one a time of day, such as a day look at 7 AM and a night look at 7 PM. Changes crossfade, and **Next Wallpaper** (⌥⌘→, or the menu bar) skips ahead. See [Playlists](#playlists).
 - **Battery-reactive wallpapers**: a wallpaper can carry one video per battery state (full, normal, under 20%, under 10%, empty) and cross-fades between them as the charge changes. The thresholds match the [Lantern](https://github.com/TheBEACONFoundation/Lantern) desktop battery gauge, so the two change together. See [Wallpaper packages](#wallpaper-packages).
 - **Multiple displays**: a different wallpaper on each screen, set from a to-scale map of your display arrangement. Screens showing the same wallpaper share one decoder.
 - **Menu bar switcher** with thumbnails and pause/resume (⌥⌘P).
@@ -45,9 +46,11 @@ Tidewall is a native SwiftUI + AppKit app in the spirit of Wallpaper Engine. Imp
   - Color adjustments are baked into a playback copy, so a styled wallpaper costs no more than a plain video.
   - It pauses when windows cover the desktop, and while the screen is locked, asleep or showing a screen saver.
   - It can also pause in Low Power Mode or on battery. It never keeps the display awake.
+  - With **Reduce Motion** on (System Settings → Accessibility → Display), wallpapers hold still. You can turn this off in Settings → Performance.
   - See [Performance](#performance) for measurements.
 - **Matching still** (optional): sets the macOS desktop picture to the loop's first frame, so Mission Control, the lock screen and the desktop after quitting all match.
 - Open at login, and an optional Dock icon.
+- **Automatic updates** from this repository's releases, verified against Tidewall's signing key. See [Releasing](#releasing).
 
 ## Install
 
@@ -83,6 +86,8 @@ Scripts/build-app.sh            # → build/Tidewall.app (universal, ad-hoc sign
 open build/Tidewall.app
 ```
 
+If `swift test` stops at "Downloading binary artifact" (fetching Sparkle), SwiftPM is waiting on a keychain prompt; run `swift test --disable-keychain` instead.
+
 For quick iteration, `Scripts/build-app.sh debug` builds for your Mac's architecture only. You can also open `Package.swift` in Xcode. Because the app needs its bundle's Info.plist and resources, run it through the build script.
 
 ### Distribution builds
@@ -97,14 +102,28 @@ Scripts/package.sh
 
 Pushing a tag like `v1.1.0` runs the [Release workflow](.github/workflows/release.yml), which tests, packages and publishes a GitHub Release. If the signing secrets listed at the top of that workflow are configured, it signs and notarizes too.
 
+### Releasing
+
+Installed copies update themselves with [Sparkle](https://sparkle-project.org). Every release carries an `appcast.xml` feed, and the app reads the latest one from `releases/latest/download/appcast.xml`. The feed points at the release's ZIP and carries its EdDSA signature. Tidewall only installs a download whose signature matches the public key in `Resources/Info.plist`.
+
+The private key lives in the maintainer's login keychain, under the account `tidewall`. It was made with `generate_keys --account tidewall`, which is one of the tools in `.build/artifacts/sparkle/Sparkle/bin`. **Back it up**: without it, no installed copy will accept another update. To let the Release workflow sign updates, export it once into the `SPARKLE_PRIVATE_KEY` repository secret:
+
+```bash
+.build/artifacts/sparkle/Sparkle/bin/generate_keys --account tidewall -x sparkle-key.txt
+gh secret set SPARKLE_PRIVATE_KEY < sparkle-key.txt
+rm sparkle-key.txt
+```
+
+`Scripts/package.sh` writes the feed whenever the key is available, from that secret or from the keychain. Update checks need the releases to be downloadable without signing in, so the repository must be public.
+
 ## Blocks
 
-**File → New Wallpaper from Blocks** (⌘N) opens a template chooser: Night Sky, Synthwave, Ocean, Music Party or Blank. Each template becomes a stack of blocks you can edit:
+**File → New Wallpaper from Blocks** (⌘N) opens a template chooser: Night Sky, Synthwave, Ocean, Music Party, Desk Clock or Blank. Each template becomes a stack of blocks you can edit:
 
 - **Order:** blocks run from top to bottom, and each one draws over the blocks above it. Drag to reorder, switch any block off, or expand it to change its settings.
 - **Settings:** each block shows only the controls that make sense for it (colors, then things like brightness, size, speed, amount, direction or position), and every slider has a reset button.
 - **Reacting to music:** set **React to** to bass, vocals and mids, treble, volume or the beat, and the block brightens, swells and speeds up with the music. Tidewall only listens while a visible wallpaper has a block that reacts.
-- **Sharing:** **More → Export…** saves a small `.tidewall` file (a `wallpaper.json` recipe with no video inside). Anyone with Tidewall can open it to add your wallpaper.
+- **Sharing:** **More → Export…** saves a small `.tidewall` file: a `wallpaper.json` recipe, plus any pictures the wallpaper uses. Anyone with Tidewall can open it to add your wallpaper.
 
 | Category | Blocks |
 | --- | --- |
@@ -112,9 +131,22 @@ Pushing a tag like `v1.1.0` runs the [Release workflow](.github/workflows/releas
 | Light & Shapes | Glowing Orb, Light Rays, Ripples, Neon Grid |
 | Motion | Particles (up, down, left, right, outward or inward), Waves |
 | Music | Spectrum Ring, Equalizer |
+| Clock, Text & Pictures | Clock (time, date or both), Text, Picture (fills the screen with a slow drift, or placed freely) |
 | Finishing | Vignette |
 
+Clock and text blocks come in five type styles and glow softly; the clock follows your Mac's 12- or 24-hour setting. Pictures are copied into the library, at most 4K across. The desktop picture that **Match the macOS wallpaper** sets leaves clocks out, since a still would show the wrong time.
+
 Blocks wallpapers are drawn live on the GPU by a single precompiled shader that evaluates up to 16 blocks per pixel, so editing never has to recompile anything. They render at half resolution, at 30 fps when idle and 60 fps with music, and pause when the desktop is covered, just like Pulse.
+
+## Playlists
+
+**File → New Playlist** (⇧⌘N), or **New Playlist with This Wallpaper** on any card, makes a playlist. Set it as your wallpaper like any other. In its editor:
+
+- **On a Timer:** each wallpaper shows for 1 minute to 1 day, in order or shuffled. A shuffle shows every wallpaper once before any repeats, and picks up where it was after a restart.
+- **By Time of Day:** each wallpaper starts at its own time and stays until the next one, every day. A timeline shows the day's schedule.
+- **Next Wallpaper** skips ahead from the editor, the menu bar or the Playback menu (⌥⌘→).
+
+Changes crossfade over 2.5 seconds. The next picture starts underneath and the old one fades out once the new one has a frame, so there's never a flash of black.
 
 ## Audio-reactive wallpapers
 
@@ -211,7 +243,7 @@ Every motion completes a whole number of cycles per loop, so each video repeats 
 ## Limitations
 
 - WebM and MKV aren't supported, because AVFoundation can't play them. Convert them to MP4 or MOV first.
-- Wallpapers are videos only; interactive, web or shader scenes are not supported.
+- Web pages and interactive scenes can't be wallpapers. Live wallpapers are the built-in Pulse and ones made with blocks.
 - macOS's own wallpaper still appears in Mission Control unless **Match the macOS wallpaper** is enabled.
 
 ## Contributing

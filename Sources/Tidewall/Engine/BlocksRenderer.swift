@@ -16,8 +16,10 @@ struct BlocksScene {
 /// music already applied.
 struct BlockUniform {
     var kind: Int32 = 0
+    /// Texture blocks: their texture's index, or -1 when they have none.
     var flags: Int32 = 0
     var opacity: Float = 1
+    /// Texture blocks: the texture's width over height.
     var pad: Float = 0
     var colorA: SIMD4<Float> = .zero
     var colorB: SIMD4<Float> = .zero
@@ -46,6 +48,7 @@ final class BlocksRenderer {
     let device: MTLDevice
     let queue: MTLCommandQueue
     let pipeline: MTLRenderPipelineState
+    let textures: BlockTextures
 
     private init?() {
         guard let base = VisualizerRenderer.shared,
@@ -57,23 +60,33 @@ final class BlocksRenderer {
         descriptor.vertexFunction = vertex
         descriptor.fragmentFunction = fragment
         descriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
-        guard let pipeline = try? base.device.makeRenderPipelineState(descriptor: descriptor) else { return nil }
+        guard let pipeline = try? base.device.makeRenderPipelineState(descriptor: descriptor),
+              let textures = BlockTextures(device: base.device, queue: base.queue)
+        else { return nil }
+        self.textures = textures
         device = base.device
         queue = base.queue
         self.pipeline = pipeline
     }
 
+    /// - Parameter slots: where each clock, text and picture block's
+    ///   texture is; those without one draw nothing.
     nonisolated static func uniforms(_ composition: Composition, frame: AudioAnalyzer.Frame, motion: BlocksMotion,
-                                     size: CGSize, time: Float) -> (BlocksScene, [BlockUniform]) {
+                                     size: CGSize, time: Float,
+                                     slots: [UUID: BlockTextureSlot] = [:]) -> (BlocksScene, [BlockUniform]) {
         func color(_ c: RGBAColor) -> SIMD4<Float> { [Float(c.red), Float(c.green), Float(c.blue), 1] }
         let blocks = composition.blocks.filter(\.enabled).prefix(Composition.maxBlocks).map { b -> BlockUniform in
             let reaction = Float(Double(b.react.value(in: frame)) * b.reactStrength)
+            let slot = slots[b.id]
+            // Type sizes itself from its texture; everything else from its detail setting.
+            let detail = b.kind.isType ? (slot?.height ?? 0) * (1 + 0.35 * reaction) : Float(b.detail)
             return BlockUniform(
-                kind: Int32(b.kind.rawValue), opacity: Float(b.opacity),
+                kind: Int32(b.kind.rawValue), flags: b.kind.usesTexture ? slot?.index ?? -1 : 0,
+                opacity: Float(b.opacity), pad: slot?.aspect ?? 0,
                 colorA: color(b.colorA), colorB: color(b.colorB),
                 // Reacting blocks brighten and swell with the music.
                 params: [Float(b.amount) * (1 + 1.2 * reaction), Float(b.size) * (1 + 0.35 * reaction),
-                         Float(b.detail), Float(b.count)],
+                         detail, Float(b.count)],
                 place: [Float(b.x), Float(b.y), Float(motion.phases[b.id] ?? 0), reaction])
         }
         let scene = BlocksScene(resolution: [Float(size.width), Float(size.height)], time: time,
@@ -83,7 +96,8 @@ final class BlocksRenderer {
         return (scene, Array(blocks))
     }
 
-    func encode(_ encoder: MTLRenderCommandEncoder, scene: BlocksScene, blocks: [BlockUniform], spectrum: [Float]) {
+    func encode(_ encoder: MTLRenderCommandEncoder, scene: BlocksScene, blocks: [BlockUniform], spectrum: [Float],
+                textures: [MTLTexture]) {
         var s = scene
         var b = blocks.isEmpty ? [BlockUniform()] : blocks
         var bands = spectrum
@@ -91,17 +105,20 @@ final class BlocksRenderer {
         encoder.setFragmentBytes(&s, length: MemoryLayout<BlocksScene>.stride, index: 0)
         encoder.setFragmentBytes(&b, length: MemoryLayout<BlockUniform>.stride * b.count, index: 1)
         encoder.setFragmentBytes(&bands, length: MemoryLayout<Float>.stride * bands.count, index: 2)
+        encoder.setFragmentTextures(textures, range: 0..<textures.count)
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
     }
 
-    /// One frame as an image, with a moment of music (thumbnails, stills, tests).
+    /// One frame as an image, with a moment of music (thumbnails, stills,
+    /// tests). `date` sets the clocks; nil leaves them out.
     func snapshot(_ composition: Composition, size: CGSize, frame: AudioAnalyzer.Frame = VisualizerRenderer.demoFrame,
-                  motion: BlocksMotion? = nil) -> CGImage? {
+                  motion: BlocksMotion? = nil, date: Date? = .now) -> CGImage? {
         var m = motion ?? BlocksMotion()
         if motion == nil { m.advance(composition, frame: frame, by: 6) }
-        let (scene, blocks) = Self.uniforms(composition, frame: frame, motion: m, size: size, time: 6)
+        let (bound, slots) = textures.prepare(composition, drawableHeight: size.height, date: date)
+        let (scene, blocks) = Self.uniforms(composition, frame: frame, motion: m, size: size, time: 6, slots: slots)
         return VisualizerRenderer.shared?.render(size: size) { encoder in
-            encode(encoder, scene: scene, blocks: blocks, spectrum: frame.spectrum)
+            encode(encoder, scene: scene, blocks: blocks, spectrum: frame.spectrum, textures: bound)
         }
     }
 
@@ -271,7 +288,9 @@ final class BlocksRenderer {
     }
 
     fragment float4 blocks_fragment(VOut in [[stage_in]], constant Scene &scene [[buffer(0)]],
-                                    constant BlockData *blocks [[buffer(1)]], constant float *spectrum [[buffer(2)]]) {
+                                    constant BlockData *blocks [[buffer(1)]], constant float *spectrum [[buffer(2)]],
+                                    array<texture2d<float>, 8> textures [[texture(0)]]) {
+        constexpr sampler ts(filter::linear, mip_filter::linear, address::clamp_to_zero);
         float2 frag = float2(in.position.x, scene.resolution.y - in.position.y);
         float2 uv = frag / scene.resolution;
         float aspect = scene.resolution.x / scene.resolution.y;
@@ -296,6 +315,38 @@ final class BlocksRenderer {
                 case 10: {
                     float v = smoothstep(0.35 * b.params.y, 1.1 * b.params.y, length(p * float2(0.8, 1.0)));
                     col *= 1.0 - v * clamp(b.params.x, 0.0, 1.5) * 0.66 * b.opacity;
+                    continue;
+                }
+                case 11: case 12: {
+                    // Type: white coverage in one channel; a blurred mip level glows around it.
+                    if (b.flags < 0) continue;
+                    float h = max(b.params.z, 1e-4), w = h * b.pad;
+                    float2 q = (p - center) / float2(w, h);
+                    float2 t = float2(q.x + 0.5, 0.5 - q.y);
+                    float ink = textures[b.flags].sample(ts, t).r;
+                    float glow = 0.6 * textures[b.flags].sample(ts, t, level(3.5)).r
+                               + 0.4 * textures[b.flags].sample(ts, t, level(5.5)).r;
+                    col += b.colorA.rgb * glow * b.params.x * 0.9 * b.opacity;
+                    col = mix(col, b.colorA.rgb, clamp(ink * b.opacity, 0.0, 1.0));
+                    continue;
+                }
+                case 13: {
+                    // A picture: filling the screen with a slow drift, or placed freely.
+                    if (b.flags < 0) continue;
+                    float2 t;
+                    if (b.params.z < 0.5) {
+                        float zoom = (1.08 + 0.05 * sin(b.place.z * 0.23)) * (1.0 + 0.04 * b.place.w);
+                        float2 drift = float2(sin(b.place.z * 0.13), cos(b.place.z * 0.17)) * 0.025;
+                        float2 fit = aspect > b.pad ? float2(1.0, b.pad / aspect) : float2(aspect / b.pad, 1.0);
+                        float2 c = (uv - 0.5) * fit / zoom + 0.5 + drift * fit;
+                        t = float2(c.x, 1.0 - c.y);
+                    } else {
+                        float h = 0.5 * b.params.y, w = h * b.pad;
+                        float2 q = (p - center) / float2(w, h);
+                        t = float2(q.x + 0.5, 0.5 - q.y);
+                    }
+                    float4 s = textures[b.flags].sample(ts, t);
+                    col = mix(col, s.rgb * b.params.x, clamp(s.a * b.opacity, 0.0, 1.0));
                     continue;
                 }
                 default: continue;

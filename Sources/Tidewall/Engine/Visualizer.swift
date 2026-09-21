@@ -296,12 +296,14 @@ enum LiveContent: Hashable {
         }
     }
 
-    /// A representative frame, for thumbnails and stills.
+    /// A representative frame, for thumbnails and stills. A desktop picture
+    /// leaves clocks out: it would show the wrong time within a minute.
     @MainActor
-    func snapshot(size: CGSize) -> CGImage? {
+    func snapshot(size: CGSize, forDesktopPicture: Bool = false) -> CGImage? {
         switch self {
         case .pulse(let settings): VisualizerRenderer.shared?.snapshot(settings: settings, size: size)
-        case .blocks(let composition): BlocksRenderer.shared?.snapshot(composition, size: size)
+        case .blocks(let composition):
+            BlocksRenderer.shared?.snapshot(composition, size: size, date: forDesktopPicture ? nil : .now)
         }
     }
 }
@@ -402,10 +404,13 @@ final class VisualizerView: MTKView, MTKViewDelegate {
             MainActor.assumeIsolated { renderer.encode(encoder, uniforms: uniforms, spectrum: frame.spectrum) }
         case .blocks(let composition):
             motion.advance(composition, frame: frame, by: Double(dt))
-            let (scene, blocks) = BlocksRenderer.uniforms(composition, frame: frame, motion: motion,
-                                                          size: drawableSize, time: time)
+            let size = drawableSize
             MainActor.assumeIsolated {
-                BlocksRenderer.shared?.encode(encoder, scene: scene, blocks: blocks, spectrum: frame.spectrum)
+                guard let renderer = BlocksRenderer.shared else { return }
+                let (textures, slots) = renderer.textures.prepare(composition, drawableHeight: size.height, date: Date())
+                let (scene, blocks) = BlocksRenderer.uniforms(composition, frame: frame, motion: motion,
+                                                              size: size, time: time, slots: slots)
+                renderer.encode(encoder, scene: scene, blocks: blocks, spectrum: frame.spectrum, textures: textures)
             }
         }
         encoder.endEncoding()

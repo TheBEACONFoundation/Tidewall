@@ -60,13 +60,17 @@ else
 fi
 
 echo "==> Compiling Tidewall $VERSION ($BUILD_NUMBER), $CONFIG"
-swift build -c "$CONFIG" "${ARCH_FLAGS[@]+"${ARCH_FLAGS[@]}"}"
-BIN="$(swift build -c "$CONFIG" "${ARCH_FLAGS[@]+"${ARCH_FLAGS[@]}"}" --show-bin-path)/Tidewall"
+# Without --disable-keychain, SwiftPM can stall on a keychain prompt while
+# fetching Sparkle.
+swift build --disable-keychain -c "$CONFIG" "${ARCH_FLAGS[@]+"${ARCH_FLAGS[@]}"}"
+PRODUCTS="$(swift build --disable-keychain -c "$CONFIG" "${ARCH_FLAGS[@]+"${ARCH_FLAGS[@]}"}" --show-bin-path)"
+BIN="$PRODUCTS/Tidewall"
 
 echo "==> Assembling $APP"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
 cp "$BIN" "$APP/Contents/MacOS/Tidewall"
+ditto "$PRODUCTS/Sparkle.framework" "$APP/Contents/Frameworks/Sparkle.framework"
 cp "$PLIST_SRC" "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$APP/Contents/Info.plist"
@@ -75,6 +79,12 @@ printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 if [[ -n "${SIGN_IDENTITY:-}" ]]; then
     echo "==> Signing with $SIGN_IDENTITY"
+    # Sparkle's helpers first, inside out, as its documentation describes.
+    SPARKLE="$APP/Contents/Frameworks/Sparkle.framework"
+    for part in "$SPARKLE"/Versions/B/XPCServices/*.xpc "$SPARKLE/Versions/B/Autoupdate" \
+                "$SPARKLE/Versions/B/Updater.app" "$SPARKLE"; do
+        [[ -e "$part" ]] && codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$part"
+    done
     codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP"
 else
     echo "==> Ad-hoc signing (set SIGN_IDENTITY to sign for distribution)"

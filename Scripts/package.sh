@@ -1,6 +1,7 @@
 #!/bin/bash
 # Builds a release and packages it for distribution into dist/:
-#   Tidewall-<version>.dmg, Tidewall-<version>.zip and SHA256SUMS.txt
+#   Tidewall-<version>.dmg, Tidewall-<version>.zip and SHA256SUMS.txt, plus
+#   appcast.xml (the update feed) when the update-signing key is available
 #
 # Environment (all optional):
 #   VERSION         see build-app.sh
@@ -8,6 +9,7 @@
 #   NOTARY_PROFILE  notarytool keychain profile (xcrun notarytool store-credentials).
 #                   Requires SIGN_IDENTITY. Notarizes and staples the app and DMG.
 #   NOTARY_KEYCHAIN keychain holding that profile, if not in the default search list
+#   SPARKLE_PRIVATE_KEY  the update-signing key (else the "tidewall" keychain item)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -53,5 +55,11 @@ if [[ -n "${NOTARY_PROFILE:-}" ]]; then
 fi
 
 (cd dist && shasum -a 256 ./*.dmg ./*.zip | sed 's# \./# #' > SHA256SUMS.txt)
+
+if [[ -n "${SPARKLE_PRIVATE_KEY:-}" ]] || security find-generic-password -a tidewall -s "https://sparkle-project.org" >/dev/null 2>&1; then
+    Scripts/make-appcast.sh "$ZIP"
+else
+    echo "==> No update-signing key: skipping appcast.xml (installed copies won't be offered this release)"
+fi
 echo "==> Packaged:"
 ls -lh dist

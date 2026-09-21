@@ -1,5 +1,6 @@
 import AppKit
 import AVFoundation
+import ImageIO
 import Observation
 import SwiftUI
 import UniformTypeIdentifiers
@@ -82,7 +83,13 @@ final class LibraryStore {
         do {
             let decoded = try Self.decodeLibrary(data)
             // Drop entries whose media went missing (e.g. deleted in Finder).
-            wallpapers = decoded.filter { $0.isLive || fm.fileExists(atPath: mediaURL(for: $0).path) }
+            wallpapers = decoded.filter { !$0.hasVideo || fm.fileExists(atPath: mediaURL(for: $0).path) }
+            // Pictures replaced or removed in the blocks editor last time.
+            let used = wallpapers.reduce(into: Set<String>()) { $0.formUnion($1.allMediaFiles) }
+            for file in (try? fm.contentsOfDirectory(atPath: mediaDirectory.path)) ?? []
+            where file.hasPrefix(Self.picturePrefix) && !used.contains(file) {
+                try? fm.removeItem(at: mediaDirectory.appendingPathComponent(file))
+            }
         } catch {
             // Set the unreadable file aside rather than letting the next save
             // overwrite it, so the library can still be recovered by hand.
@@ -159,6 +166,10 @@ final class LibraryStore {
     func delete(_ ids: Set<UUID>) {
         let removed = wallpapers.filter { ids.contains($0.id) }
         wallpapers.removeAll { ids.contains($0.id) }
+        // Playlists forget deleted wallpapers.
+        for index in wallpapers.indices where wallpapers[index].playlist != nil {
+            wallpapers[index].playlist!.items.removeAll { ids.contains($0.wallpaperID) }
+        }
         // Duplicates share media, so only delete files nothing references.
         let stillUsed = wallpapers.reduce(into: Set<String>()) { $0.formUnion($1.allMediaFiles) }
         let unused = removed.reduce(into: Set<String>()) { $0.formUnion($1.allMediaFiles) }.subtracting(stillUsed)
@@ -238,8 +249,13 @@ final class LibraryStore {
               let manifest = try? JSONDecoder().decode(Manifest.self, from: data)
         else { throw ImportError.badPackage(name) }
 
-        // A wallpaper made with blocks: nothing to copy, just the recipe.
-        if let blocks = manifest.blocks, manifest.battery == nil {
+        // A wallpaper made with blocks: the recipe, plus any pictures it uses.
+        if var blocks = manifest.blocks, manifest.battery == nil {
+            for i in blocks.blocks.indices {
+                guard let file = blocks.blocks[i].media else { continue }
+                let source = package.appendingPathComponent((file as NSString).lastPathComponent)
+                blocks.blocks[i].media = try? importPicture(from: source)
+            }
             return Wallpaper(
                 id: UUID(), name: manifest.name ?? package.deletingPathExtension().lastPathComponent,
                 mediaFile: "", originalFileName: name, dateAdded: .now, duration: 0, pixelWidth: 0, pixelHeight: 0,
@@ -340,6 +356,32 @@ final class LibraryStore {
         }
     }
 
+    // MARK: Playlists
+
+    /// Adds a playlist of `wallpaperIDs` and returns it.
+    @discardableResult
+    func createPlaylist(with wallpaperIDs: [UUID] = []) -> Wallpaper {
+        var name = "My Playlist", n = 2
+        while wallpapers.contains(where: { $0.name == name }) { name = "My Playlist \(n)"; n += 1 }
+        var playlist = Playlist()
+        let playable = wallpaperIDs.filter { wallpaper(id: $0)?.isPlaylist == false }
+        let starts = Playlist.spreadStarts(count: playable.count)
+        playlist.items = zip(playable, starts).map { PlaylistItem(wallpaperID: $0, start: $1) }
+        let wallpaper = Wallpaper(
+            id: UUID(), name: name, mediaFile: "", originalFileName: "Playlist",
+            dateAdded: .now, duration: 0, pixelWidth: 0, pixelHeight: 0,
+            settings: WallpaperSettings(), playlist: playlist)
+        wallpapers.insert(wallpaper, at: 0)
+        structureChanged()
+        return wallpaper
+    }
+
+    /// The items of `playlist` that can be shown: their wallpaper exists
+    /// and isn't a playlist itself.
+    func playableItems(of playlist: Playlist) -> [PlaylistItem] {
+        playlist.items.filter { wallpaper(id: $0.wallpaperID).map { !$0.isPlaylist } ?? false }
+    }
+
     // MARK: Blocks
 
     /// Adds a new blocks wallpaper started from `template` and returns it.
@@ -368,6 +410,35 @@ final class LibraryStore {
         try fm.createDirectory(at: url, withIntermediateDirectories: true)
         try encoder.encode(Manifest(name: wallpaper.name, blocks: composition))
             .write(to: url.appendingPathComponent("wallpaper.json"), options: .atomic)
+        for file in Set(composition.blocks.compactMap(\.media)) {
+            try fm.copyItem(at: mediaDirectory.appendingPathComponent(file), to: url.appendingPathComponent(file))
+        }
+    }
+
+    /// Names of pictures copied in for picture blocks.
+    static let picturePrefix = "block-"
+
+    /// Copies a picture for a picture block into the library, at most 4K
+    /// across and turned the right way up, and returns its file name.
+    func importPicture(from source: URL) throws -> String {
+        let name = source.lastPathComponent
+        guard let imageSource = CGImageSourceCreateWithURL(source as CFURL, nil),
+              let image = CGImageSourceCreateThumbnailAtIndex(imageSource, 0, [
+                  kCGImageSourceCreateThumbnailFromImageAlways: true,
+                  kCGImageSourceCreateThumbnailWithTransform: true,
+                  kCGImageSourceThumbnailMaxPixelSize: 3840,
+              ] as CFDictionary)
+        else { throw ImportError.unreadable(name) }
+        let opaque: [CGImageAlphaInfo] = [.none, .noneSkipFirst, .noneSkipLast]
+        let type: UTType = opaque.contains(image.alphaInfo) ? .jpeg : .png
+        let file = "\(Self.picturePrefix)\(UUID().uuidString).\(type.preferredFilenameExtension ?? "png")"
+        try? FileManager.default.createDirectory(at: mediaDirectory, withIntermediateDirectories: true)
+        let destination = mediaDirectory.appendingPathComponent(file)
+        guard let writer = CGImageDestinationCreateWithURL(destination as CFURL, type.identifier as CFString, 1, nil)
+        else { throw ImportError.unreadable(name) }
+        CGImageDestinationAddImage(writer, image, [kCGImageDestinationLossyCompressionQuality: 0.92] as CFDictionary)
+        guard CGImageDestinationFinalize(writer) else { throw ImportError.unreadable(name) }
+        return file
     }
 
     func presentExportPanel(for wallpaper: Wallpaper) {
