@@ -6,6 +6,7 @@ import AVFoundation
 final class WallpaperPlayerView: NSView {
     private var playerLayer = WallpaperPlayerView.makePlayerLayer()
     private var incomingLayer: AVPlayerLayer?
+    private var incomingFade: TimeInterval = 0
     private var readyObservation: NSKeyValueObservation?
     private var settings = WallpaperSettings()
     private var videoSize: CGSize = .zero
@@ -38,8 +39,9 @@ final class WallpaperPlayerView: NSView {
 
     /// Switches to another player showing the same wallpaper (e.g. its
     /// optimized copy). The current picture stays up until the new one has a
-    /// frame ready, so the swap is invisible.
-    func transition(to newPlayer: AVPlayer) {
+    /// frame ready, so the swap is invisible; with `fade`, the old picture then
+    /// dissolves into the new one (used when a battery variant takes over).
+    func transition(to newPlayer: AVPlayer, fade: TimeInterval = 0) {
         guard player !== newPlayer else { return }
         guard playerLayer.player != nil else {
             player = newPlayer
@@ -50,6 +52,7 @@ final class WallpaperPlayerView: NSView {
         incoming.player = newPlayer
         layer?.insertSublayer(incoming, below: playerLayer)
         incomingLayer = incoming
+        incomingFade = fade
         needsLayout = true
         readyObservation = incoming.observe(\.isReadyForDisplay, options: [.initial, .new]) { [weak self] layer, _ in
             guard layer.isReadyForDisplay else { return }
@@ -63,8 +66,25 @@ final class WallpaperPlayerView: NSView {
         incomingLayer = nil
         let outgoing = playerLayer
         playerLayer = incoming
-        outgoing.player = nil
-        outgoing.removeFromSuperlayer()
+        guard incomingFade > 0 else {
+            outgoing.player = nil
+            outgoing.removeFromSuperlayer()
+            return
+        }
+        // The new picture is already underneath: fade the old one away.
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(incomingFade)
+        CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeInEaseOut))
+        CATransaction.setCompletionBlock {
+            outgoing.player = nil
+            outgoing.removeFromSuperlayer()
+        }
+        let fadeOut = CABasicAnimation(keyPath: "opacity")
+        fadeOut.fromValue = 1
+        fadeOut.toValue = 0
+        outgoing.add(fadeOut, forKey: "fade")
+        outgoing.opacity = 0
+        CATransaction.commit()
     }
 
     private func cancelTransition() {

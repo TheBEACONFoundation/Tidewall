@@ -296,7 +296,8 @@ private struct WallpaperCard: View {
         let range = wallpaper.loopRange
         let length = range.upperBound - range.lowerBound
         let trimmed = length < wallpaper.duration - 0.05 ? "Trimmed · " : ""
-        return "\(trimmed)\(length.shortDuration) · \(wallpaper.resolutionDescription)"
+        let battery = wallpaper.isBatteryReactive ? "Follows battery · " : ""
+        return "\(battery)\(trimmed)\(length.shortDuration) · \(wallpaper.resolutionDescription)"
     }
 
     private var activeLabel: String {

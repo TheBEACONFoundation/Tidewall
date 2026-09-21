@@ -1,5 +1,6 @@
 import AppKit
 import IOKit.ps
+import Observation
 import ServiceManagement
 
 /// A connected screen, identified by a UUID that survives reboots and
@@ -141,6 +142,48 @@ enum PowerMonitor {
     }
 
     static var isLowPowerModeEnabled: Bool { ProcessInfo.processInfo.isLowPowerModeEnabled }
+
+    /// Charge level (0…1) and charging flag of the internal battery, read the
+    /// way Lantern reads them; nil on Macs without one.
+    static var battery: (level: Double, charging: Bool)? {
+        guard let info = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+              let list = IOPSCopyPowerSourcesList(info)?.takeRetainedValue() as? [CFTypeRef]
+        else { return nil }
+        for source in list {
+            guard let desc = IOPSGetPowerSourceDescription(info, source)?.takeUnretainedValue() as? [String: Any],
+                  desc[kIOPSTypeKey] as? String == kIOPSInternalBatteryType
+            else { continue }
+            let current = desc[kIOPSCurrentCapacityKey] as? Int ?? 0
+            let max = desc[kIOPSMaxCapacityKey] as? Int ?? 100
+            return (max > 0 ? Double(current) / Double(max) : 0, desc[kIOPSIsChargingKey] as? Bool ?? false)
+        }
+        return nil
+    }
+}
+
+/// The current ``BatteryState``, observable so views follow it too.
+@MainActor
+@Observable
+final class BatteryStatus {
+    static let shared = BatteryStatus()
+
+    private(set) var state: BatteryState?
+
+    private init() { refresh() }
+
+    /// Re-reads the battery; returns true when the state changed.
+    ///
+    /// For testing variants without draining the battery:
+    /// `defaults write io.github.thebeaconfoundation.Tidewall debugBatteryState low`
+    /// (picked up within 20 seconds; `defaults delete … debugBatteryState` to stop).
+    @discardableResult
+    func refresh() -> Bool {
+        let forced = UserDefaults.standard.string(forKey: "debugBatteryState").flatMap(BatteryState.init(rawValue:))
+        let new = forced ?? PowerMonitor.battery.map { BatteryState.of(level: $0.level, charging: $0.charging) }
+        guard new != state else { return false }
+        state = new
+        return true
+    }
 }
 
 enum LoginItem {

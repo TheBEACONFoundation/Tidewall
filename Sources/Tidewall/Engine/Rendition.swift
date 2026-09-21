@@ -9,6 +9,8 @@ struct PlaybackSource: Equatable {
     var url: URL
     /// The settings to play with. Adjustments are identity when they're baked in.
     var wallpaper: Wallpaper
+    /// The library video behind it (differs per battery variant).
+    var mediaFile: String
 }
 
 /// Facts about a source video that decide whether a playback copy helps.
@@ -39,13 +41,14 @@ struct RenditionRecipe: Codable, Hashable {
     var version = RenditionRecipe.formatVersion
 
     /// Returns nil when the original already plays as efficiently as a copy would.
-    static func make(for wallpaper: Wallpaper, info: SourceInfo, requiredScale: Double) -> RenditionRecipe? {
+    static func make(for wallpaper: Wallpaper, info: SourceInfo, requiredScale: Double,
+                     mediaFile: String? = nil) -> RenditionRecipe? {
         let adjustments = wallpaper.settings.adjustments
         // Keep HDR sources untouched unless a look has to be baked anyway.
         if info.isHDR && adjustments.isIdentity { return nil }
         let scale = quantizedScale(requiredScale)
         guard !adjustments.isIdentity || scale < 1 || !info.hardwareDecodable else { return nil }
-        return RenditionRecipe(mediaFile: wallpaper.mediaFile, adjustments: adjustments, scale: scale)
+        return RenditionRecipe(mediaFile: mediaFile ?? wallpaper.mediaFile, adjustments: adjustments, scale: scale)
     }
 
     /// Only downscale when it saves a meaningful amount (≥ 25%), and round up

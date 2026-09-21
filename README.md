@@ -36,6 +36,7 @@ Tidewall is a native SwiftUI + AppKit app in the spirit of Wallpaper Engine. Imp
   - Brightness, contrast, saturation, hue, blur, vignette and tint
   - Optional audio
 - **Live edits**: changes save automatically and update the desktop as you drag the sliders.
+- **Battery-reactive wallpapers**: a wallpaper can carry one video per battery state (full, normal, under 20%, under 10%, empty) and cross-fades between them as the charge changes. The thresholds match the [Lantern](https://github.com/TheBEACONFoundation/Lantern) desktop battery gauge, so the two change together. See [Wallpaper packages](#wallpaper-packages).
 - **Multiple displays**: a different wallpaper on each screen, set from a to-scale map of your display arrangement. Screens showing the same wallpaper share one decoder.
 - **Menu bar switcher** with thumbnails and pause/resume (⌥⌘P).
 - **Easy on the battery**:
@@ -93,6 +94,34 @@ Scripts/package.sh
 ```
 
 Pushing a tag like `v1.1.0` runs the [Release workflow](.github/workflows/release.yml), which tests, packages and publishes a GitHub Release. If the signing secrets listed at the top of that workflow are configured, it signs and notarizes too.
+
+## Wallpaper packages
+
+A `.tidewall` package is a folder containing a `wallpaper.json` manifest and the videos it names. To import one, double-click it, drop it on the library, or choose it from **+ → Import**. For now, packages carry battery variants:
+
+```json
+{
+  "name": "Lantern",
+  "primary": "normal",
+  "battery": { "full": "White.mov", "normal": "Green.mov", "low": "Yellow.mov",
+               "critical": "Red.mov", "empty": "Black.mov" }
+}
+```
+
+Missing states fall back to the `primary` video. All the variants share one set of settings, so trim, speed, framing and adjustments apply to whichever is showing. Tidewall reads the battery's charge and charging state the way Lantern does:
+- **Full** at 99.5%.
+- **Low**, **critical** and **empty** at 20%, 10% and 1.5% while not charging.
+- **Normal** otherwise.
+
+`Scripts/make-lantern.swift` renders the matching wallpaper for Lantern. It reads the emblem's saved position and size from Lantern's settings, and renders at your display's exact pixel size, so the scene's light sits exactly behind the emblem. Each state uses Lantern's palette and particle behavior for that corps.
+
+```bash
+swiftc -O Scripts/make-lantern.swift -o .build/tools/make-lantern
+.build/tools/make-lantern --package ~/Desktop/Lantern.tidewall   # about 4 minutes
+open -a Tidewall ~/Desktop/Lantern.tidewall
+```
+
+Re-render it if you move or resize the emblem, or change displays.
 
 ## Performance
 

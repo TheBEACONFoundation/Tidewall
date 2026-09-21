@@ -15,6 +15,7 @@ enum ImportError: LocalizedError {
     case noVideo(String)
     case unsupported(String)
     case unreadable(String)
+    case badPackage(String)
 
     var errorDescription: String? {
         switch self {
@@ -22,6 +23,7 @@ enum ImportError: LocalizedError {
         case .noVideo(let name): "“\(name)” doesn't contain a video track."
         case .unsupported(let name): "macOS can't play “\(name)”. Convert it to MP4 or MOV (H.264 or HEVC) and try again."
         case .unreadable(let name): "“\(name)” couldn't be read."
+        case .badPackage(let name): "“\(name)” isn't a valid Tidewall wallpaper package."
         }
     }
 }
@@ -36,22 +38,32 @@ final class LibraryStore {
     private(set) var importsInProgress = 0
     var importErrors: [String] = []
 
-    static let importableTypes: [UTType] = [.movie, .gif, .webP, .png, .heics]
+    /// A folder holding a `wallpaper.json` manifest and its videos, e.g. one
+    /// video per battery state.
+    static let packageType = UTType(exportedAs: "io.github.thebeaconfoundation.tidewall.wallpaper", conformingTo: .package)
+    static let importableTypes: [UTType] = [.movie, .gif, .webP, .png, .heics, packageType]
 
     @ObservationIgnored let rootURL: URL
     @ObservationIgnored private var saveTask: Task<Void, Never>?
 
-    private init() {
+    /// - Parameter rootURL: where the library lives; tests pass a temporary folder.
+    init(rootURL: URL? = nil) {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        rootURL = support.appendingPathComponent("Tidewall", isDirectory: true)
+        self.rootURL = rootURL ?? support.appendingPathComponent("Tidewall", isDirectory: true)
     }
 
     var mediaDirectory: URL { rootURL.appendingPathComponent("Media", isDirectory: true) }
     var stillsDirectory: URL { rootURL.appendingPathComponent("Stills", isDirectory: true) }
     private var libraryFile: URL { rootURL.appendingPathComponent("Library.json") }
 
+    /// The video to show for `wallpaper` right now: its variant for the current
+    /// battery state if it has one.
     func mediaURL(for wallpaper: Wallpaper) -> URL {
-        mediaDirectory.appendingPathComponent(wallpaper.mediaFile)
+        mediaDirectory.appendingPathComponent(currentMediaFile(for: wallpaper))
+    }
+
+    func currentMediaFile(for wallpaper: Wallpaper) -> String {
+        wallpaper.mediaFile(for: BatteryStatus.shared.state)
     }
 
     func wallpaper(id: UUID?) -> Wallpaper? {
@@ -148,9 +160,10 @@ final class LibraryStore {
         let removed = wallpapers.filter { ids.contains($0.id) }
         wallpapers.removeAll { ids.contains($0.id) }
         // Duplicates share media, so only delete files nothing references.
-        let stillUsed = Set(wallpapers.map(\.mediaFile))
-        for wallpaper in removed where !stillUsed.contains(wallpaper.mediaFile) {
-            try? FileManager.default.trashItem(at: mediaURL(for: wallpaper), resultingItemURL: nil)
+        let stillUsed = wallpapers.reduce(into: Set<String>()) { $0.formUnion($1.allMediaFiles) }
+        let unused = removed.reduce(into: Set<String>()) { $0.formUnion($1.allMediaFiles) }.subtracting(stillUsed)
+        for file in unused {
+            try? FileManager.default.trashItem(at: mediaDirectory.appendingPathComponent(file), resultingItemURL: nil)
         }
         structureChanged()
     }
@@ -165,7 +178,7 @@ final class LibraryStore {
     func presentImportPanel() {
         let panel = NSOpenPanel()
         panel.title = "Import Wallpapers"
-        panel.message = "Choose videos (MP4, MOV, M4V) or animated images (GIF, PNG, WebP)."
+        panel.message = "Choose videos (MP4, MOV, M4V), animated images (GIF, PNG, WebP) or Tidewall packages."
         panel.prompt = "Import"
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
@@ -182,7 +195,9 @@ final class LibraryStore {
             importsInProgress += 1
             defer { importsInProgress -= 1 }
             do {
-                var wallpaper = try await makeWallpaper(from: url)
+                var wallpaper = url.pathExtension.lowercased() == "tidewall"
+                    ? try await makeWallpaper(fromPackage: url)
+                    : try await makeWallpaper(from: url)
                 if let name = names[url] { wallpaper.name = name }
                 wallpapers.insert(wallpaper, at: 0)
                 imported.append(wallpaper)
@@ -195,6 +210,67 @@ final class LibraryStore {
     }
 
     private func makeWallpaper(from source: URL) async throws -> Wallpaper {
+        let media = try await ingest(source)
+        return Wallpaper(
+            id: UUID(),
+            name: source.deletingPathExtension().lastPathComponent,
+            mediaFile: media.file,
+            originalFileName: source.lastPathComponent,
+            dateAdded: .now,
+            duration: media.duration,
+            pixelWidth: media.size.width,
+            pixelHeight: media.size.height,
+            settings: WallpaperSettings())
+    }
+
+    /// Imports a `.tidewall` package: a folder with `wallpaper.json`
+    /// (`{"name": …, "primary": "normal", "battery": {"full": "Full.mov", …}}`)
+    /// and the videos it names.
+    private func makeWallpaper(fromPackage package: URL) async throws -> Wallpaper {
+        let name = package.lastPathComponent
+        struct Manifest: Decodable {
+            var name: String?
+            var primary: String?
+            var battery: [String: String]
+        }
+        guard let data = try? Data(contentsOf: package.appendingPathComponent("wallpaper.json")),
+              let manifest = try? JSONDecoder().decode(Manifest.self, from: data),
+              !manifest.battery.isEmpty,
+              manifest.battery.keys.allSatisfy({ BatteryState(rawValue: $0) != nil })
+        else { throw ImportError.badPackage(name) }
+
+        var variants: [String: String] = [:]
+        var media: [String: (file: String, duration: Double, size: CGSize)] = [:]
+        do {
+            for (state, file) in manifest.battery {
+                let ingested = try await ingest(package.appendingPathComponent(file))
+                media[state] = ingested
+                variants[state] = ingested.file
+            }
+        } catch {
+            for item in media.values { try? FileManager.default.removeItem(at: mediaDirectory.appendingPathComponent(item.file)) }
+            throw error
+        }
+        let primaryState = manifest.primary.flatMap { media[$0] != nil ? $0 : nil }
+            ?? (media[BatteryState.normal.rawValue] != nil ? BatteryState.normal.rawValue : media.keys.sorted()[0])
+        let primary = media[primaryState]!
+        return Wallpaper(
+            id: UUID(),
+            name: manifest.name ?? package.deletingPathExtension().lastPathComponent,
+            mediaFile: primary.file,
+            originalFileName: name,
+            dateAdded: .now,
+            // Variants share one timeline, so trim and speed apply to all of them.
+            duration: media.values.map(\.duration).min() ?? primary.duration,
+            pixelWidth: primary.size.width,
+            pixelHeight: primary.size.height,
+            settings: WallpaperSettings(),
+            batteryVariants: variants)
+    }
+
+    /// Copies (or converts) a video into the library and reads what Tidewall
+    /// needs to know about it.
+    private func ingest(_ source: URL) async throws -> (file: String, duration: Double, size: CGSize) {
         let displayName = source.lastPathComponent
         let id = UUID()
         let isImage = UTType(filenameExtension: source.pathExtension)?.conforms(to: .image) ?? false
@@ -228,17 +304,7 @@ final class LibraryStore {
             }
             let (naturalSize, transform) = try await track.load(.naturalSize, .preferredTransform)
             let size = naturalSize.applying(transform)
-
-            return Wallpaper(
-                id: id,
-                name: source.deletingPathExtension().lastPathComponent,
-                mediaFile: destination.lastPathComponent,
-                originalFileName: displayName,
-                dateAdded: .now,
-                duration: duration.seconds,
-                pixelWidth: abs(size.width),
-                pixelHeight: abs(size.height),
-                settings: WallpaperSettings())
+            return (destination.lastPathComponent, duration.seconds, CGSize(width: abs(size.width), height: abs(size.height)))
         } catch let error as ImportError {
             try? FileManager.default.removeItem(at: destination)
             throw error

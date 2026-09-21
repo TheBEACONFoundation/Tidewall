@@ -41,7 +41,8 @@ final class ThumbnailCache {
     private var rawFrames: [String: CGImage] = [:]
 
     static func cacheKey(for wallpaper: Wallpaper) -> String {
-        "\(wallpaper.id)|\(thumbnailTime(for: wallpaper))|\(wallpaper.settings.adjustments.hashValue)"
+        let file = LibraryStore.shared.currentMediaFile(for: wallpaper)
+        return "\(file)|\(thumbnailTime(for: wallpaper))|\(wallpaper.settings.adjustments.hashValue)"
     }
 
     /// Shortly into the loop, since many clips open on a black frame.
@@ -60,7 +61,7 @@ final class ThumbnailCache {
         if let cached = rendered.object(forKey: key as NSString) { return cached }
 
         let time = Self.thumbnailTime(for: wallpaper)
-        let rawKey = "\(wallpaper.id)|\(time)"
+        let rawKey = "\(LibraryStore.shared.currentMediaFile(for: wallpaper))|\(time)"
         let raw: CGImage
         if let cached = rawFrames[rawKey] {
             raw = cached
@@ -94,6 +95,7 @@ final class SystemWallpaperSync {
     func sync(_ wallpaper: Wallpaper, on display: Display) {
         var hasher = Hasher()
         hasher.combine(wallpaper.id)
+        hasher.combine(LibraryStore.shared.currentMediaFile(for: wallpaper))
         hasher.combine(wallpaper.settings)
         hasher.combine(display.pixelSize.width)
         hasher.combine(display.pixelSize.height)

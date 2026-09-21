@@ -24,8 +24,8 @@ final class RenditionManager {
 
     /// Cached source info; starts loading it (and posts a change) when missing.
     func info(for wallpaper: Wallpaper) -> SourceInfo? {
-        if let info = sourceInfo[wallpaper.mediaFile] { return info }
-        let file = wallpaper.mediaFile
+        let file = LibraryStore.shared.currentMediaFile(for: wallpaper)
+        if let info = sourceInfo[file] { return info }
         if loadingInfo.insert(file).inserted {
             let url = LibraryStore.shared.mediaURL(for: wallpaper)
             let id = wallpaper.id

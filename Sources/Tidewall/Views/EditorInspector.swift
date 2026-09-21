@@ -14,6 +14,12 @@ struct EditorInspector: View {
                 TextField("Name", text: $wallpaper.name)
                 LabeledContent("Source", value: wallpaper.originalFileName)
                 LabeledContent("Video", value: "\(wallpaper.resolutionDescription) · \(wallpaper.duration.shortDuration)")
+                if let variants = wallpaper.batteryVariants, !variants.isEmpty {
+                    LabeledContent("Follows battery") {
+                        Text("\(variants.count) looks · now \((BatteryStatus.shared.state ?? .normal).title)")
+                    }
+                    .help("This wallpaper has a video for each battery state and switches as the charge changes. Settings here apply to all of them.")
+                }
             }
 
             Section("Framing") {

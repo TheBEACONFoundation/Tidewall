@@ -58,6 +58,7 @@ final class WallpaperEngine {
     @ObservationIgnored private var suspensions: Set<String> = []
     @ObservationIgnored private var coveredDisplays: Set<String> = []
     @ObservationIgnored private var coverageTimer: Timer?
+    @ObservationIgnored private var batteryTimer: Timer?
     @ObservationIgnored private var started = false
 
     private static let assignmentsKey = "assignments"
@@ -164,7 +165,35 @@ final class WallpaperEngine {
         }
 
         updateCoverageMonitoring()
+        updateBatteryMonitoring()
         updatePlayback()
+        syncSystemWallpaper()
+    }
+
+    // MARK: Battery variants
+
+    /// A slow safety net next to the power-source notification (which is what
+    /// Lantern does too), only while a battery-reactive wallpaper is showing.
+    private func updateBatteryMonitoring() {
+        let wanted = players.keys.contains { store.wallpaper(id: $0)?.isBatteryReactive == true }
+        if wanted, batteryTimer == nil {
+            let timer = Timer(timeInterval: 20, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.batteryDidChange() }
+            }
+            timer.tolerance = 5
+            RunLoop.main.add(timer, forMode: .common)
+            batteryTimer = timer
+        } else if !wanted {
+            batteryTimer?.invalidate()
+            batteryTimer = nil
+        }
+    }
+
+    private func batteryDidChange() {
+        guard BatteryStatus.shared.refresh() else { return }
+        for id in players.keys where store.wallpaper(id: id)?.isBatteryReactive == true {
+            refresh(id)
+        }
         syncSystemWallpaper()
     }
 
@@ -184,7 +213,9 @@ final class WallpaperEngine {
             existing.update(source.wallpaper)
             return existing
         }
-        return replacePlayer(existing, for: wallpaper.id, with: source)
+        // A new battery variant dissolves in; other swaps are invisible anyway.
+        let fade: TimeInterval = source.mediaFile != current.mediaFile ? 1.5 : 0
+        return replacePlayer(existing, for: wallpaper.id, with: source, fade: fade)
     }
 
     private func makePlayer(for source: PlaybackSource) -> LoopingPlayer {
@@ -194,7 +225,8 @@ final class WallpaperEngine {
     /// Switches to a new source (e.g. a finished playback copy) without a
     /// visible cut: the replacement is loaded and synced to the current
     /// position before the windows cross over to it.
-    private func replacePlayer(_ old: LoopingPlayer, for id: UUID, with source: PlaybackSource) -> LoopingPlayer {
+    private func replacePlayer(_ old: LoopingPlayer, for id: UUID, with source: PlaybackSource,
+                               fade: TimeInterval = 0) -> LoopingPlayer {
         // If an earlier replacement never made it on screen, drop it and hand
         // over from whatever the windows are actually showing.
         let outgoing = onScreen[id] ?? old
@@ -209,12 +241,13 @@ final class WallpaperEngine {
             guard let self, !Task.isCancelled, self.players[id] === replacement else { return }
             self.updatePlayback()
             for window in self.windows.values where window.wallpaperID == id {
-                window.playerView.transition(to: replacement.player)
+                window.playerView.transition(to: replacement.player, fade: fade)
             }
             self.onScreen[id] = replacement
             self.swaps[id] = nil
-            // The old picture stays up until the new layer has a frame.
-            try? await Task.sleep(for: .seconds(2))
+            // The old picture stays up until the new layer has a frame (and
+            // has faded out, for a variant change).
+            try? await Task.sleep(for: .seconds(2 + fade))
             outgoing.invalidate()
             // A copy of a look that's no longer used (e.g. adjustments reset).
             if self.sources[id]?.url != outgoing.url { self.renditions.deleteCopy(at: outgoing.url) }
@@ -229,13 +262,15 @@ final class WallpaperEngine {
         let screens = displays.filter { assignments.wallpaperID(for: $0.id) == wallpaper.id }.map(\.pixelSize)
         let requiredScale = FramePipeline.requiredScale(videoSize: wallpaper.videoSize, screenPixelSizes: screens,
                                                         settings: wallpaper.settings)
-        let live = PlaybackSource(url: store.mediaURL(for: wallpaper), wallpaper: wallpaper)
+        let mediaFile = store.currentMediaFile(for: wallpaper)
+        let live = PlaybackSource(url: store.mediaURL(for: wallpaper), wallpaper: wallpaper, mediaFile: mediaFile)
 
         guard Preferences.bool(Preferences.optimizePlayback), let info = renditions.info(for: wallpaper) else {
             renditions.cancelPending(for: wallpaper.id)
             return live
         }
-        guard let recipe = RenditionRecipe.make(for: wallpaper, info: info, requiredScale: requiredScale) else {
+        guard let recipe = RenditionRecipe.make(for: wallpaper, info: info, requiredScale: requiredScale,
+                                                mediaFile: mediaFile) else {
             renditions.cancelPending(for: wallpaper.id)
             // No copy needed anymore; one still on screen is removed after its swap.
             if let current = sources[wallpaper.id]?.url, renditions.isCopy(current) { return live }
@@ -246,7 +281,7 @@ final class WallpaperEngine {
             renditions.cancelPending(for: wallpaper.id)
             var baked = wallpaper
             baked.settings.adjustments = Adjustments()
-            return PlaybackSource(url: url, wallpaper: baked)
+            return PlaybackSource(url: url, wallpaper: baked, mediaFile: mediaFile)
         }
         renditions.schedule(recipe, for: wallpaper)
         return live
@@ -387,7 +422,10 @@ final class WallpaperEngine {
         }
 
         on(center, NSApplication.didChangeScreenParametersNotification) { $0.reconcile() }
-        on(center, .powerSourceDidChange) { $0.updatePlayback() }
+        on(center, .powerSourceDidChange) { engine in
+            engine.batteryDidChange()
+            engine.updatePlayback()
+        }
         on(center, .NSProcessInfoPowerStateDidChange) { $0.updatePlayback() }
         on(center, UserDefaults.didChangeNotification) { engine in
             engine.updateCoverageMonitoring()

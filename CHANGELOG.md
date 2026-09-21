@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+Battery-reactive wallpapers:
+- A wallpaper can hold one video per battery state, and cross-fades to the matching one as the charge changes. It uses the same thresholds as the Lantern battery gauge, so the two stay in sync.
+- New `.tidewall` package format (a folder with a `wallpaper.json` manifest) for importing such sets.
+- `Scripts/make-lantern.swift` renders a set that matches Lantern: lit from the emblem's exact position, in each corps' palette, with its particle behavior.
+
 New built-in wallpaper, **Cool Chicken**: a chicken in sunglasses struts through a synthwave sunset, rendered procedurally in 4K60 as a seamless 12-second loop.
 - Existing libraries receive new built-ins automatically.
 - The library's **+** menu (and **File → Add Built-in Wallpaper**) re-adds any built-in.

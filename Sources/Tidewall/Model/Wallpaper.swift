@@ -16,8 +16,23 @@ struct Wallpaper: Codable, Identifiable, Hashable {
     var pixelWidth: Double
     var pixelHeight: Double
     var settings: WallpaperSettings
+    /// Optional per-battery-state videos (``BatteryState`` raw value → media
+    /// file). `mediaFile` is the fallback, e.g. on Macs without a battery.
+    var batteryVariants: [String: String]? = nil
 
     var videoSize: CGSize { CGSize(width: pixelWidth, height: pixelHeight) }
+
+    var isBatteryReactive: Bool { !(batteryVariants?.isEmpty ?? true) }
+
+    /// The video to show for a battery state.
+    func mediaFile(for state: BatteryState?) -> String {
+        state.flatMap { batteryVariants?[$0.rawValue] } ?? mediaFile
+    }
+
+    /// Every media file this wallpaper uses.
+    var allMediaFiles: Set<String> {
+        Set([mediaFile] + (batteryVariants.map { Array($0.values) } ?? []))
+    }
 
     /// The portion of the source that loops, in seconds.
     var loopRange: ClosedRange<Double> {
@@ -28,6 +43,32 @@ struct Wallpaper: Codable, Identifiable, Hashable {
 
     var resolutionDescription: String {
         "\(Int(pixelWidth))×\(Int(pixelHeight))"
+    }
+}
+
+/// The battery's condition, using the same thresholds as the Lantern battery
+/// gauge, so a battery-reactive wallpaper changes exactly when its emblem does.
+enum BatteryState: String, Codable, CaseIterable, Identifiable {
+    case full, normal, low, critical, empty
+
+    var id: String { rawValue }
+
+    static func of(level: Double, charging: Bool) -> BatteryState {
+        if level >= 0.995 { return .full }
+        if !charging && level <= 0.015 { return .empty }
+        if !charging && level <= 0.10 { return .critical }
+        if !charging && level <= 0.20 { return .low }
+        return .normal
+    }
+
+    var title: String {
+        switch self {
+        case .full: "Full"
+        case .normal: "Normal"
+        case .low: "Low (under 20%)"
+        case .critical: "Critical (under 10%)"
+        case .empty: "Empty (1%)"
+        }
     }
 }
 
