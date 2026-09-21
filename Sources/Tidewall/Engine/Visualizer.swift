@@ -137,6 +137,14 @@ final class VisualizerRenderer {
 
     /// Renders one frame to an image (thumbnails, the matching macOS still).
     func snapshot(settings: VisualizerSettings, size: CGSize, frame: AudioAnalyzer.Frame = demoFrame) -> CGImage? {
+        render(size: size) { encoder in
+            encode(encoder, uniforms: Self.uniforms(settings: settings, frame: frame, size: size, time: 12, flight: 7.3, drift: 21),
+                   spectrum: frame.spectrum)
+        }
+    }
+
+    /// Draws one frame offscreen with `draw` and reads it back as an image.
+    func render(size: CGSize, _ draw: (MTLRenderCommandEncoder) -> Void) -> CGImage? {
         let width = Int(size.width), height = Int(size.height)
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: width, height: height,
                                                                   mipmapped: false)
@@ -149,8 +157,7 @@ final class VisualizerRenderer {
         pass.colorAttachments[0].loadAction = .dontCare
         pass.colorAttachments[0].storeAction = .store
         guard let encoder = buffer.makeRenderCommandEncoder(descriptor: pass) else { return nil }
-        encode(encoder, uniforms: Self.uniforms(settings: settings, frame: frame, size: size, time: 12, flight: 7.3, drift: 21),
-               spectrum: frame.spectrum)
+        draw(encoder)
         encoder.endEncoding()
         buffer.commit()
         buffer.waitUntilCompleted()
@@ -259,19 +266,61 @@ final class VisualizerRenderer {
     """
 }
 
-/// A Metal view that draws the visualizer from the shared audio analysis.
-final class VisualizerView: MTKView, MTKViewDelegate {
-    var settings = VisualizerSettings() {
-        didSet { if settings.quality != oldValue.quality { updateDrawableSize() } }
+/// What a live wallpaper draws.
+enum LiveContent: Equatable {
+    case pulse(VisualizerSettings)
+    case blocks(Composition)
+
+    init?(_ wallpaper: Wallpaper) {
+        if let settings = wallpaper.visualizer {
+            self = .pulse(settings)
+        } else if let composition = wallpaper.composition {
+            self = .blocks(composition)
+        } else {
+            return nil
+        }
     }
+
+    /// Only listen to the Mac's audio when the picture uses it.
+    var needsAudio: Bool {
+        switch self {
+        case .pulse: true
+        case .blocks(let composition): composition.usesAudio
+        }
+    }
+
+    var quality: Double {
+        switch self {
+        case .pulse(let settings): settings.quality
+        case .blocks: 0.5
+        }
+    }
+
+    /// A representative frame, for thumbnails and stills.
+    @MainActor
+    func snapshot(size: CGSize) -> CGImage? {
+        switch self {
+        case .pulse(let settings): VisualizerRenderer.shared?.snapshot(settings: settings, size: size)
+        case .blocks(let composition): BlocksRenderer.shared?.snapshot(composition, size: size)
+        }
+    }
+}
+
+/// A Metal view that draws a live wallpaper from the shared audio analysis.
+final class VisualizerView: MTKView, MTKViewDelegate {
+    var content: LiveContent {
+        didSet { if content.quality != oldValue.quality { updateDrawableSize() } }
+    }
+    var needsAudio: Bool { content.needsAudio }
     private var flight: Float = 0
     private var drift: Float = 0
+    private var motion = BlocksMotion()
     private var lastTime = CACurrentMediaTime()
     private var quietSince: CFTimeInterval?
 
-    init?(frame: CGRect, settings: VisualizerSettings) {
+    init?(frame: CGRect, content: LiveContent) {
         guard let renderer = VisualizerRenderer.shared else { return nil }
-        self.settings = settings
+        self.content = content
         super.init(frame: frame, device: renderer.device)
         colorPixelFormat = .bgra8Unorm
         framebufferOnly = true
@@ -294,7 +343,7 @@ final class VisualizerView: MTKView, MTKViewDelegate {
     }
 
     private func updateDrawableSize() {
-        let scale = (window?.backingScaleFactor ?? 2) * min(1, max(0.25, settings.quality))
+        let scale = (window?.backingScaleFactor ?? 2) * min(1, max(0.25, content.quality))
         drawableSize = CGSize(width: max(16, bounds.width * scale), height: max(16, bounds.height * scale))
     }
 
@@ -308,25 +357,35 @@ final class VisualizerView: MTKView, MTKViewDelegate {
         let now = CACurrentMediaTime()
         let dt = Float(min(0.1, now - lastTime))
         lastTime = now
-        let frame = MainActor.assumeIsolated { AudioReactor.shared.frame(at: now) }
+        let frame = needsAudio ? MainActor.assumeIsolated { AudioReactor.shared.frame(at: now) } : AudioAnalyzer.Frame()
+        let time = Float(now.truncatingRemainder(dividingBy: 1000))
 
-        // Travel speeds follow the music; integrating them keeps motion smooth.
-        flight += dt * (0.04 + 0.55 * frame.level) * Float(settings.motion)
-        drift += dt * (0.25 + 2.0 * frame.level)
-
-        // Idle at a lower frame rate once the music has been off for a moment.
+        // Full frame rate while music moves the picture, less when it doesn't.
+        let idleRate = needsAudio ? 20 : 30
         if frame.level < 0.02 {
             quietSince = quietSince ?? now
-            if now - quietSince! > 2, preferredFramesPerSecond != 20 { preferredFramesPerSecond = 20 }
+            if now - quietSince! > 2, preferredFramesPerSecond != idleRate { preferredFramesPerSecond = idleRate }
         } else {
             quietSince = nil
             if preferredFramesPerSecond != 60 { preferredFramesPerSecond = 60 }
         }
 
-        let uniforms = VisualizerRenderer.uniforms(settings: settings, frame: frame, size: drawableSize,
-                                                   time: Float(now.truncatingRemainder(dividingBy: 1000)),
-                                                   flight: flight, drift: drift)
-        MainActor.assumeIsolated { renderer.encode(encoder, uniforms: uniforms, spectrum: frame.spectrum) }
+        switch content {
+        case .pulse(let settings):
+            // Travel speeds follow the music; integrating them keeps motion smooth.
+            flight += dt * (0.04 + 0.55 * frame.level) * Float(settings.motion)
+            drift += dt * (0.25 + 2.0 * frame.level)
+            let uniforms = VisualizerRenderer.uniforms(settings: settings, frame: frame, size: drawableSize,
+                                                       time: time, flight: flight, drift: drift)
+            MainActor.assumeIsolated { renderer.encode(encoder, uniforms: uniforms, spectrum: frame.spectrum) }
+        case .blocks(let composition):
+            motion.advance(composition, frame: frame, by: Double(dt))
+            let (scene, blocks) = BlocksRenderer.uniforms(composition, frame: frame, motion: motion,
+                                                          size: drawableSize, time: time)
+            MainActor.assumeIsolated {
+                BlocksRenderer.shared?.encode(encoder, scene: scene, blocks: blocks, spectrum: frame.spectrum)
+            }
+        }
         encoder.endEncoding()
         buffer.present(drawable)
         buffer.commit()

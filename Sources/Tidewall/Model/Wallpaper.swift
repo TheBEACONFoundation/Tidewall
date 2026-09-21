@@ -22,10 +22,12 @@ struct Wallpaper: Codable, Identifiable, Hashable {
     /// Set for live wallpapers drawn in real time (the audio visualizer);
     /// those have no video file.
     var visualizer: VisualizerSettings? = nil
+    /// Set for wallpapers made in the blocks editor.
+    var composition: Composition? = nil
 
     var videoSize: CGSize { CGSize(width: pixelWidth, height: pixelHeight) }
 
-    var isLive: Bool { visualizer != nil }
+    var isLive: Bool { visualizer != nil || composition != nil }
 
     var isBatteryReactive: Bool { !(batteryVariants?.isEmpty ?? true) }
 

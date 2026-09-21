@@ -23,6 +23,7 @@ Tidewall is a native SwiftUI + AppKit app in the spirit of Wallpaper Engine. Imp
 
 ## Features
 
+- **Make your own with blocks**: stack simple blocks, such as gradients, aurora, particles, waves, glowing orbs, light rays, ripples, a neon grid and music bars, then tweak their colors and sliders and watch it live. Any block can react to the bass, the beat or the volume. Start from a template, and share what you make as a `.tidewall` file. See [Blocks](#blocks).
 - **Built-in wallpapers**:
   - **Pulse**: a live audio visualizer that moves with whatever your Mac is playing.
   - **Cool Chicken**: a chicken in shades struts through a synthwave sunset, in 4K60.
@@ -96,6 +97,25 @@ Scripts/package.sh
 
 Pushing a tag like `v1.1.0` runs the [Release workflow](.github/workflows/release.yml), which tests, packages and publishes a GitHub Release. If the signing secrets listed at the top of that workflow are configured, it signs and notarizes too.
 
+## Blocks
+
+**File → New Wallpaper from Blocks** (⌘N) opens a template chooser: Night Sky, Synthwave, Ocean, Music Party or Blank. Each template becomes a stack of blocks you can edit:
+
+- **Order:** blocks run from top to bottom, and each one draws over the blocks above it. Drag to reorder, switch any block off, or expand it to change its settings.
+- **Settings:** each block shows only the controls that make sense for it (colors, then things like brightness, size, speed, amount, direction or position), and every slider has a reset button.
+- **Reacting to music:** set **React to** to bass, vocals and mids, treble, volume or the beat, and the block brightens, swells and speeds up with the music. Tidewall only listens while a visible wallpaper has a block that reacts.
+- **Sharing:** **More → Export…** saves a small `.tidewall` file (a `wallpaper.json` recipe with no video inside). Anyone with Tidewall can open it to add your wallpaper.
+
+| Category | Blocks |
+| --- | --- |
+| Backgrounds | Gradient, Aurora |
+| Light & Shapes | Glowing Orb, Light Rays, Ripples, Neon Grid |
+| Motion | Particles (up, down, left, right, outward or inward), Waves |
+| Music | Spectrum Ring, Equalizer |
+| Finishing | Vignette |
+
+Blocks wallpapers are drawn live on the GPU by a single precompiled shader that evaluates up to 16 blocks per pixel, so editing never has to recompile anything. They render at half resolution, at 30 fps when idle and 60 fps with music, and pause when the desktop is covered, just like Pulse.
+
 ## Audio-reactive wallpapers
 
 **Pulse** is drawn live on the GPU rather than played from a video, and it moves with the sound your Mac plays: music, videos, games.
@@ -113,7 +133,7 @@ Pushing a tag like `v1.1.0` runs the [Release workflow](.github/workflows/releas
 
 ## Wallpaper packages
 
-A `.tidewall` package is a folder containing a `wallpaper.json` manifest and the videos it names. To import one, double-click it, drop it on the library, or choose it from **+ → Import**. For now, packages carry battery variants:
+A `.tidewall` package is a folder containing a `wallpaper.json` manifest, plus any videos it names. To import one, double-click it, drop it on the library, or choose it from **+ → Import**. A package holds either a blocks recipe (`{"name": …, "blocks": {"blocks": [...]}}`, as written by **Export…**) or battery variants:
 
 ```json
 {

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+**Make your own wallpapers with blocks** (**File → New Wallpaper from Blocks**, ⌘N):
+- **Building:** start from a template (Night Sky, Synthwave, Ocean, Music Party or Blank), then stack, reorder, toggle and tweak eleven kinds of block: gradient, aurora, particles, waves, glowing orb, light rays, ripples, neon grid, spectrum ring, equalizer and vignette.
+- **Reacting to music:** any block can react to the bass, mids, treble, volume or the beat.
+- **Sharing:** export as a small `.tidewall` recipe that anyone can import.
+- **Rendering:** drawn live by one precompiled Metal shader, so edits apply instantly, on the desktop too.
+
 **Pulse**, a live audio visualizer wallpaper:
 - **Hears your Mac:** it listens to the system audio mix through a Core Audio process tap. The audio is analyzed in memory and never recorded.
 - **The picture:** a ring spectrum, a bass-driven core, beat shockwaves, and particles that speed up with loudness, rendered on the GPU.

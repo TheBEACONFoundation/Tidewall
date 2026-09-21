@@ -6,7 +6,10 @@ struct WallpaperEditorView: View {
 
     var body: some View {
         if let binding = store.binding(for: wallpaperID) {
-            if binding.wrappedValue.isLive {
+            if binding.wrappedValue.composition != nil {
+                BlocksEditorContent(wallpaper: binding)
+                    .id(wallpaperID)
+            } else if binding.wrappedValue.isLive {
                 LiveEditorContent(wallpaper: binding)
                     .id(wallpaperID)
             } else {

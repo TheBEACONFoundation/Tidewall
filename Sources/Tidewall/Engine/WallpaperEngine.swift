@@ -367,7 +367,7 @@ final class WallpaperEngine {
                 if !active { hiddenCount += 1 }
             }
             window.visualizer?.isPaused = !active
-            if active { drawing += 1 }
+            if active && window.visualizer?.needsAudio == true { drawing += 1 }
         }
         AudioReactor.shared.setDemand(drawing, from: "desktop")
 

@@ -19,7 +19,7 @@ struct LiveEditorContent: View {
     var body: some View {
         HStack(spacing: 0) {
             VStack(spacing: 16) {
-                VisualizerPreview(settings: settings.wrappedValue)
+                LivePreview(content: .pulse(settings.wrappedValue))
                     .aspectRatio(aspectRatio, contentMode: .fit)
                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .overlay {
@@ -131,23 +131,26 @@ struct LiveEditorContent: View {
     }
 }
 
-/// A live visualizer inside SwiftUI; it counts as audio demand while shown.
-struct VisualizerPreview: NSViewRepresentable {
-    let settings: VisualizerSettings
+/// A live wallpaper inside SwiftUI; it counts as audio demand while shown
+/// (if it uses audio).
+struct LivePreview: NSViewRepresentable {
+    let content: LiveContent
 
     func makeNSView(context: Context) -> NSView {
-        guard let view = VisualizerView(frame: .zero, settings: settings) else {
+        guard let view = VisualizerView(frame: .zero, content: content) else {
             let placeholder = NSView()
             placeholder.wantsLayer = true
             placeholder.layer?.backgroundColor = NSColor.black.cgColor
             return placeholder
         }
-        AudioReactor.shared.setDemand(1, from: "editor")
+        AudioReactor.shared.setDemand(content.needsAudio ? 1 : 0, from: "editor")
         return view
     }
 
     func updateNSView(_ view: NSView, context: Context) {
-        (view as? VisualizerView)?.settings = settings
+        guard let view = view as? VisualizerView, view.content != content else { return }
+        view.content = content
+        AudioReactor.shared.setDemand(content.needsAudio ? 1 : 0, from: "editor")
     }
 
     static func dismantleNSView(_ view: NSView, coordinator: ()) {

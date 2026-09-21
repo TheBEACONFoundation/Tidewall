@@ -41,7 +41,7 @@ final class ThumbnailCache {
     private var rawFrames: [String: CGImage] = [:]
 
     static func cacheKey(for wallpaper: Wallpaper) -> String {
-        if let visualizer = wallpaper.visualizer { return "live|\(visualizer.hashValue)" }
+        if let content = LiveContent(wallpaper) { return "live|\(String(describing: content).hashValue)" }
         let file = LibraryStore.shared.currentMediaFile(for: wallpaper)
         return "\(file)|\(thumbnailTime(for: wallpaper))|\(wallpaper.settings.adjustments.hashValue)"
     }
@@ -61,9 +61,8 @@ final class ThumbnailCache {
         let key = Self.cacheKey(for: wallpaper)
         if let cached = rendered.object(forKey: key as NSString) { return cached }
 
-        if let visualizer = wallpaper.visualizer {
-            guard let frame = VisualizerRenderer.shared?.snapshot(settings: visualizer, size: CGSize(width: 640, height: 400))
-            else { return nil }
+        if let content = LiveContent(wallpaper) {
+            guard let frame = content.snapshot(size: CGSize(width: 640, height: 400)) else { return nil }
             let image = NSImage(cgImage: frame, size: CGSize(width: frame.width, height: frame.height))
             rendered.setObject(image, forKey: key as NSString)
             return image
@@ -129,9 +128,9 @@ final class SystemWallpaperSync {
         let store = LibraryStore.shared
         let pixelSize = display.pixelSize
         let data: Data?
-        if let visualizer = wallpaper.visualizer {
-            // A live wallpaper's still is a representative moment of music.
-            data = VisualizerRenderer.shared?.snapshot(settings: visualizer, size: pixelSize)
+        if let content = LiveContent(wallpaper) {
+            // A live wallpaper's still is a representative moment of it.
+            data = content.snapshot(size: pixelSize)
                 .flatMap { NSBitmapImageRep(cgImage: $0).representation(using: .jpeg, properties: [.compressionFactor: 0.92]) }
         } else {
             let url = store.mediaURL(for: wallpaper)

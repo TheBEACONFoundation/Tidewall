@@ -231,18 +231,28 @@ final class LibraryStore {
         struct Manifest: Decodable {
             var name: String?
             var primary: String?
-            var battery: [String: String]
+            var battery: [String: String]?
+            var blocks: Composition?
         }
         guard let data = try? Data(contentsOf: package.appendingPathComponent("wallpaper.json")),
-              let manifest = try? JSONDecoder().decode(Manifest.self, from: data),
-              !manifest.battery.isEmpty,
-              manifest.battery.keys.allSatisfy({ BatteryState(rawValue: $0) != nil })
+              let manifest = try? JSONDecoder().decode(Manifest.self, from: data)
+        else { throw ImportError.badPackage(name) }
+
+        // A wallpaper made with blocks: nothing to copy, just the recipe.
+        if let blocks = manifest.blocks, manifest.battery == nil {
+            return Wallpaper(
+                id: UUID(), name: manifest.name ?? package.deletingPathExtension().lastPathComponent,
+                mediaFile: "", originalFileName: name, dateAdded: .now, duration: 0, pixelWidth: 0, pixelHeight: 0,
+                settings: WallpaperSettings(), composition: blocks)
+        }
+        guard let battery = manifest.battery, !battery.isEmpty,
+              battery.keys.allSatisfy({ BatteryState(rawValue: $0) != nil })
         else { throw ImportError.badPackage(name) }
 
         var variants: [String: String] = [:]
         var media: [String: (file: String, duration: Double, size: CGSize)] = [:]
         do {
-            for (state, file) in manifest.battery {
+            for (state, file) in battery {
                 let ingested = try await ingest(package.appendingPathComponent(file))
                 media[state] = ingested
                 variants[state] = ingested.file
@@ -327,6 +337,51 @@ final class LibraryStore {
         defaults.set(Array(installed.union(missing.map(\.id))).sorted(), forKey: key)
         for builtIn in missing {
             await addBuiltIn(builtIn)
+        }
+    }
+
+    // MARK: Blocks
+
+    /// Adds a new blocks wallpaper started from `template` and returns it.
+    @discardableResult
+    func createBlocksWallpaper(from template: BlockTemplate) -> Wallpaper {
+        let base = template == .blank ? "My Wallpaper" : "My \(template.title)"
+        var name = base, n = 2
+        while wallpapers.contains(where: { $0.name == name }) { name = "\(base) \(n)"; n += 1 }
+        let wallpaper = Wallpaper(
+            id: UUID(), name: name, mediaFile: "", originalFileName: "Made with blocks",
+            dateAdded: .now, duration: 0, pixelWidth: 0, pixelHeight: 0,
+            settings: WallpaperSettings(), composition: template.composition)
+        wallpapers.insert(wallpaper, at: 0)
+        structureChanged()
+        return wallpaper
+    }
+
+    /// Writes a blocks wallpaper as a `.tidewall` package others can import.
+    func exportPackage(_ wallpaper: Wallpaper, to url: URL) throws {
+        guard let composition = wallpaper.composition else { return }
+        struct Manifest: Encodable { var name: String; var blocks: Composition }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let fm = FileManager.default
+        try? fm.removeItem(at: url)
+        try fm.createDirectory(at: url, withIntermediateDirectories: true)
+        try encoder.encode(Manifest(name: wallpaper.name, blocks: composition))
+            .write(to: url.appendingPathComponent("wallpaper.json"), options: .atomic)
+    }
+
+    func presentExportPanel(for wallpaper: Wallpaper) {
+        let panel = NSSavePanel()
+        panel.title = "Export Wallpaper"
+        panel.message = "Share this file: anyone with Tidewall can open it to add your wallpaper."
+        panel.nameFieldStringValue = "\(wallpaper.name).tidewall"
+        panel.allowedContentTypes = [Self.packageType]
+        NSApp.activate()
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try exportPackage(wallpaper, to: url)
+        } catch {
+            importErrors.append("Couldn't export “\(wallpaper.name)”: \(error.localizedDescription)")
         }
     }
 

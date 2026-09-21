@@ -31,6 +31,12 @@ struct LibraryRootView: View {
                 DisplaysView()
             }
         }
+        .sheet(isPresented: $navigation.showingNewBlocks) {
+            NewBlocksSheet { template in
+                let wallpaper = store.createBlocksWallpaper(from: template)
+                navigation.edit(wallpaper.id)
+            }
+        }
         .alert("Couldn't Import", isPresented: Binding(
             get: { !store.importErrors.isEmpty },
             set: { if !$0 { store.importErrors.removeAll() } }
@@ -135,6 +141,7 @@ struct LibraryGridView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Menu {
+                    Button("New from Blocks…") { navigation.showingNewBlocks = true }
                     Button("Import Videos or GIFs…") { store.presentImportPanel() }
                     Divider()
                     Section("Built-in Wallpapers") {
@@ -197,8 +204,9 @@ struct LibraryGridView: View {
         } description: {
             Text("Drop videos, GIFs or animated images here, or import them from your Mac.")
         } actions: {
-            Button("Import Wallpapers…") { store.presentImportPanel() }
+            Button("Create with Blocks…") { navigation.showingNewBlocks = true }
                 .buttonStyle(.borderedProminent)
+            Button("Import Wallpapers…") { store.presentImportPanel() }
             Button("Add Built-in Wallpapers") {
                 Task {
                     for builtIn in BuiltInWallpaper.all { await store.addBuiltIn(builtIn) }
@@ -226,6 +234,9 @@ struct LibraryGridView: View {
             Button("Show in Finder") {
                 NSWorkspace.shared.activateFileViewerSelecting([store.mediaURL(for: wallpaper)])
             }
+        }
+        if wallpaper.composition != nil {
+            Button("Export…") { store.presentExportPanel(for: wallpaper) }
         }
         Divider()
         Button("Delete…", role: .destructive) { pendingDeletion = wallpaper }
@@ -295,6 +306,10 @@ private struct WallpaperCard: View {
     }
 
     private var detailText: String {
+        if let composition = wallpaper.composition {
+            let count = composition.blocks.count
+            return "Made with blocks · \(count) block\(count == 1 ? "" : "s")" + (composition.usesAudio ? " · reacts to audio" : "")
+        }
         if wallpaper.isLive { return "Live · reacts to audio" }
         let range = wallpaper.loopRange
         let length = range.upperBound - range.lowerBound

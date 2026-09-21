@@ -166,15 +166,15 @@ final class DesktopWindow: NSWindow {
 
     /// Shows a live wallpaper drawn in real time.
     func showVisualizer(_ wallpaper: Wallpaper) {
-        guard let settings = wallpaper.visualizer else { return }
+        guard let content = LiveContent(wallpaper) else { return }
         wallpaperID = wallpaper.id
-        if visualizer == nil, let view = VisualizerView(frame: playerView.frame, settings: settings) {
+        if visualizer == nil, let view = VisualizerView(frame: playerView.frame, content: content) {
             playerView.player = nil
             view.isPaused = true // the engine starts it once it knows it's visible
             visualizer = view
             contentView = view
         }
-        visualizer?.settings = settings
+        if visualizer?.content != content { visualizer?.content = content }
         if !isVisible { orderFrontRegardless() }
     }
 

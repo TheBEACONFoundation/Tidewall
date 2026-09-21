@@ -17,6 +17,11 @@ struct TidewallApp: App {
         }
         .commands {
             CommandGroup(replacing: .newItem) {
+                Button("New Wallpaper from Blocks…") {
+                    AppDelegate.shared.showLibrary(section: .wallpapers)
+                    AppDelegate.shared.navigation.showingNewBlocks = true
+                }
+                .keyboardShortcut("n")
                 Button("Import Wallpapers…") { LibraryStore.shared.presentImportPanel() }
                     .keyboardShortcut("o")
                 BuiltInWallpaperMenu()
@@ -51,6 +56,7 @@ final class LibraryNavigation {
     var section: Section? = .wallpapers
     var path: [UUID] = []
     var selection: UUID?
+    var showingNewBlocks = false
 
     func edit(_ id: UUID) {
         section = .wallpapers
