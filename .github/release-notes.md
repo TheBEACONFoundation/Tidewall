@@ -8,3 +8,5 @@
    ```
 
 Requires macOS 15 Sequoia or later, on Apple silicon or Intel. Checksums are in `SHA256SUMS.txt`.
+
+From 1.1 on, Tidewall keeps itself up to date: it checks for new versions daily, and **Tidewall → Check for Updates…** checks now. Updates are verified against Tidewall's signing key before they're installed.
